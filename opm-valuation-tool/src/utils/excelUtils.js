@@ -304,6 +304,7 @@ export function downloadTemplate(lang = 'zh') {
   // ============================================================
   // Sheet 1: 资本结构输入模板
   // 关键金融术语保留英文括号对照，防止翻译歧义
+  // 表头下方添加字段说明行（灰色注释行）
   // ============================================================
   const header = [
     lang === 'en' ? 'Class Name' : '层级名称',
@@ -325,6 +326,27 @@ export function downloadTemplate(lang = 'zh') {
     lang === 'en' ? 'Conversion Price' : '转换价格 (Conversion Price)'
   ];
 
+  // 字段说明行（在表头下方显示为注释）
+  const fieldDescriptions = [
+    lang === 'en' ? 'Security name (e.g., Series A)' : '证券名称（如 Series A）',
+    lang === 'en' ? 'Type: common/preferred/esop/safe/convertible/warrant' : '类型: common/preferred/esop/safe/convertible/warrant',
+    lang === 'en' ? 'Number of shares (integer)' : '持股数量（整数）',
+    lang === 'en' ? 'Price per share (for preferred)' : '每股价格（优先股使用）',
+    lang === 'en' ? 'Liquidation preference multiple (e.g., 1 = 1x). Common: fill 0' : '清算优先权倍数（如 1 代表 1x）。普通股填 0',
+    lang === 'en' ? 'TRUE/FALSE. Whether to participate in residual distribution' : '是否参与剩余分配（TRUE/FALSE）',
+    lang === 'en' ? 'Conversion ratio (e.g., 1.0)' : '转股比例（如 1.0）',
+    lang === 'en' ? 'Priority: higher = earlier distribution (3 > 2 > 1 > 0)' : '优先级: 数值越大越优先（3 > 2 > 1 > 0）',
+    lang === 'en' ? 'Strike price. Common: fill 0. ESOP: must fill actual strike price' : '行权价。普通股填 0；ESOP 必须填写实际行权价',
+    lang === 'en' ? 'Vested percentage (0-1). ESOP only' : '已行权比例（0-1）。仅 ESOP 使用',
+    lang === 'en' ? 'Vesting probability (0-1). ESOP only' : '行权概率（0-1）。仅 ESOP 使用',
+    lang === 'en' ? 'Investment amount. SAFE only' : '投资金额。仅 SAFE 使用',
+    lang === 'en' ? 'Valuation cap. SAFE only' : '估值上限。仅 SAFE 使用',
+    lang === 'en' ? 'Discount rate (0-1). SAFE only' : '折扣率（0-1）。仅 SAFE 使用',
+    lang === 'en' ? 'Principal amount. Convertible only' : '本金金额。仅 Convertible 使用',
+    lang === 'en' ? 'Interest rate (0-1). Convertible only' : '利率（0-1）。仅 Convertible 使用',
+    lang === 'en' ? 'Conversion price. Convertible only' : '转换价格。仅 Convertible 使用'
+  ];
+
   const exampleData = [
     ['Series A Preferred', 'preferred', 1000000, 1.00, 1.0, 'No', 1.0, 3, '', '', '', '', '', '', '', '', ''],
     ['ESOP Pool', 'esop', 500000, '', '', '', '', 2, 0.50, 0.40, 0.60, '', '', '', '', '', ''],
@@ -332,9 +354,10 @@ export function downloadTemplate(lang = 'zh') {
     ['Common Stock', 'common', 5000000, 0.10, 0, 'No', 1.0, 0, '', '', '', '', '', '', '', '', '']
   ];
 
-  const templateData = [header, ...exampleData];
+  const templateData = [header, fieldDescriptions, ...exampleData];
   const templateSheet = XLSX.utils.aoa_to_sheet(templateData);
   XLSX.utils.book_append_sheet(wb, templateSheet, lang === 'en' ? 'Capital Structure' : '资本结构 (Capital Structure)');
+
 
   // ============================================================
   // Sheet 2: 参数设置模板

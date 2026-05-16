@@ -103,88 +103,19 @@ export function calculateCallOption(S, K, r, sigma, T) {
 }
 
 /**
- * 计算资本结构的断点（Breakpoints）
+ * ============================================================
+ * 计算单个证券的清算优先权金额
+ * 
+ * 用于确定该证券在清算瀑布（Waterfall）中的优先级位置。
+ * 清算优先权越高，该证券越早获得分配。
+ * 
+ * 各类型证券的清算优先权计算：
+ * - Preferred: 清算优先权倍数 × 股数 × 每股价格
+ * - SAFE: 投资金额（估值上限模式下）
+ * - Convertible: 本金 × (1 + 利率 × 期限)
+ * - Common/ESOP/Warrant: 0（无清算优先权）
+ * ============================================================
  */
-export function calculateBreakpoints(equityClasses) {
-  const breakpoints = [];
-  let cumulativePreference = 0;
-  const sortedClasses = [...equityClasses].sort((a, b) => b.seniority - a.seniority);
-  sortedClasses.forEach((equityClass, index) => {
-    let liquidationPref = 0;
-    switch (equityClass.type) {
-      case 'preferred':
-        liquidationPref = equityClass.liquidationPreference * equityClass.shares * (equityClass.pricePerShare || 1);
-        break;
-      case 'safe':
-        if (equityClass.valuationCap && equityClass.valuationCap > 0) liquidationPref = equityClass.investmentAmount || 0;
-        break;
-      case 'convertible':
-        liquidationPref = (equityClass.principal || 0) * (1 + (equityClass.interestRate || 0) * (equityClass.term || 1));
-        break;
-      default:
-        liquidationPref = 0;
-    }
-    cumulativePreference += liquidationPref;
-    breakpoints.push({ index, value: cumulativePreference, className: equityClass.name, type: equityClass.type });
-  });
-  return breakpoints;
-}
-
-/**
- * 计算完全稀释股数（Fully Diluted Shares）
- */
-export function calculateFullyDilutedShares(equityClasses, totalEquityValue = 0) {
-  let totalShares = 0;
-  equityClasses.forEach(ec => {
-    switch (ec.type) {
-      case 'common': totalShares += ec.shares; break;
-      case 'preferred': totalShares += ec.shares * (ec.conversionRatio || 1); break;
-      case 'esop': {
-        const vestedShares = ec.shares * (ec.vestedPercentage || 0);
-        if (ec.exercisePrice && ec.exercisePrice > 0 && totalEquityValue > 0) {
-          const currentPricePerShare = totalEquityValue / (totalShares || 1);
-          totalShares += vestedShares - ((vestedShares * ec.exercisePrice) / currentPricePerShare);
-        } else {
-          totalShares += vestedShares;
-        }
-        totalShares += (ec.shares * (1 - (ec.vestedPercentage || 0))) * (ec.probabilityOfVesting || 0.5);
-        break;
-      }
-      case 'safe': {
-        if (ec.valuationCap && ec.valuationCap > 0 && totalEquityValue > 0) {
-          const conversionPrice = Math.min(ec.valuationCap / (totalShares || 1), (totalEquityValue / (totalShares || 1)) * (ec.discountRate || 1));
-          totalShares += (ec.investmentAmount || 0) / conversionPrice;
-        } else if (ec.discountRate && ec.discountRate > 0) {
-          const discountedPrice = (totalEquityValue / (totalShares || 1)) * (1 - ec.discountRate);
-          totalShares += (ec.investmentAmount || 0) / discountedPrice;
-        } else {
-          const currentPrice = totalEquityValue / (totalShares || 1);
-          if (currentPrice > 0) totalShares += (ec.investmentAmount || 0) / currentPrice;
-        }
-        break;
-      }
-      case 'convertible': {
-        const conversionPrice = ec.conversionPrice || (ec.principal / ec.shares) || 1;
-        const accruedInterest = (ec.principal || 0) * (ec.interestRate || 0) * (ec.term || 1);
-        totalShares += ((ec.principal || 0) + accruedInterest) / conversionPrice;
-        break;
-      }
-      case 'warrant':
-        if (ec.exercisePrice && ec.exercisePrice > 0 && totalEquityValue > 0) {
-          const currentPricePerShare = totalEquityValue / (totalShares || 1);
-          if (currentPricePerShare > ec.exercisePrice) {
-            totalShares += ec.shares - ((ec.shares * ec.exercisePrice) / currentPricePerShare);
-          }
-        } else {
-          totalShares += ec.shares;
-        }
-        break;
-      default: totalShares += ec.shares || 0;
-    }
-  });
-  return totalShares;
-}
-
 function calculateClassLiquidationPreference(equityClass) {
   switch (equityClass.type) {
     case 'preferred': return equityClass.liquidationPreference * equityClass.shares * (equityClass.pricePerShare || 1);
@@ -195,71 +126,236 @@ function calculateClassLiquidationPreference(equityClass) {
 }
 
 /**
+ * ============================================================
+ * 获取证券在给定断点下的有效股数
+ * 
+ * 关键逻辑（ESOP 动态行权）：
+ * - 对于 ESOP，只有行权价 (exercisePrice) ≤ K_lower 时，
+ *   该 ESOP 才被视为"已解锁"（In-the-Money），计入分配分母。
+ * - 随着断点 K_lower 升高，越来越多的 ESOP 进入实值状态，
+ *   参与分配的总股数动态增加，实现"动态股权稀释"。
+ * - 对于非 ESOP 类型，始终计入全部股数。
+ * ============================================================
+ */
+function getEffectiveSharesAtBreakpoint(equityClass, lowerBound) {
+  switch (equityClass.type) {
+    case 'esop': {
+      // ESOP 动态行权：只有行权价 ≤ lowerBound 时才计入
+      const exercisePrice = equityClass.exercisePrice || 0;
+      if (exercisePrice > 0 && exercisePrice > lowerBound) {
+        return 0; // 该 ESOP 在此断点下尚未解锁
+      }
+      // 已解锁的 ESOP：按已行权比例 + 未行权概率折算
+      const vestedShares = equityClass.shares * (equityClass.vestedPercentage || 0);
+      const unvestedShares = equityClass.shares * (1 - (equityClass.vestedPercentage || 0));
+      const vestingProbability = equityClass.probabilityOfVesting || 0.5;
+      return vestedShares + unvestedShares * vestingProbability;
+    }
+    case 'preferred':
+      return equityClass.shares * (equityClass.conversionRatio || 1);
+    case 'common':
+      return equityClass.shares;
+    case 'safe':
+      return equityClass.shares || 0;
+    case 'convertible':
+      return equityClass.shares || 0;
+    case 'warrant':
+      return equityClass.shares;
+    default:
+      return equityClass.shares || 0;
+  }
+}
+
+/**
+ * ============================================================
+ * 构建断点矩阵（Breakpoint Matrix）- 修正版
+ * 
+ * 核心修正：区分 Per-share Strike Price 和 Aggregate Enterprise Value Breakpoint
+ * 
+ * 在 OPM 模型中，断点（Breakpoint）代表的是企业总权益价值的某个阈值，
+ * 而 ESOP 的行权价是每股价格（Per-share Strike Price）。
+ * 因此需要将每股行权价转换为对应的企业总价值断点。
+ * 
+ * 关键公式：
+ *   BP_ESOP = cumulativePref + (StrikePrice × ActiveCommonShares)
+ * 
+ * 其中：
+ *   - cumulativePref: 所有优先股的清算优先权累积值
+ *   - StrikePrice: ESOP 的每股行权价
+ *   - ActiveCommonShares: 当前活跃的普通股股数
+ *     （在 ESOP 解锁前 = Common Shares；解锁后 = Common + ESOP Shares）
+ * 
+ * 这是一个迭代过程：
+ *   1. 先处理所有清算优先权，形成初始断点
+ *   2. 然后按行权价从小到大处理 ESOP：
+ *      - 计算当前活跃的普通股股数
+ *      - 用公式 BP_ESOP = cumulativePref + (StrikePrice × ActiveCommonShares)
+ *        计算该 ESOP 触发时的企业总价值
+ *      - 将该 BP_ESOP 加入断点矩阵
+ *      - 更新 ActiveCommonShares（该 ESOP 解锁后，普通股股数增加）
+ *   3. 后续 ESOP 的触发点会因为普通股股数增加而改变
+ * 
+ * 示例：
+ *   - Series A: 1M shares, $5M liquidation preference
+ *   - ESOP 1: 0.5M shares, strike = $0.50/share
+ *   - ESOP 2: 0.3M shares, strike = $1.00/share
+ *   - Common: 5M shares
+ * 
+ *   初始 cumulativePref = $5M, ActiveCommonShares = 5M (仅 Common)
+ *   ESOP 1 trigger = $5M + ($0.50 × 5M) = $7.5M
+ *   解锁后 ActiveCommonShares = 5.5M
+ *   ESOP 2 trigger = $5M + ($1.00 × 5.5M) = $10.5M
+ * ============================================================
+ */
+export function buildBreakpointMatrix(equityClasses, totalEquityValue) {
+  // 按优先级排序（seniority 越高越优先）
+  const sortedClasses = [...equityClasses].sort((a, b) => b.seniority - a.seniority);
+  
+  // 收集所有断点值
+  const breakpointSet = new Set();
+  breakpointSet.add(0); // 起始点
+  
+  // ============================================================
+  // 第一阶段：处理所有清算优先权 (Liquidation Preferences)
+  // 这些是固定的断点，不受股权稀释影响
+  // 
+  // 只有 Preferred 类型有清算优先权。
+  // Common 和 ESOP 的清算优先权为 0。
+  // ============================================================
+  let cumulativePref = 0;
+  sortedClasses.forEach(ec => {
+    const pref = calculateClassLiquidationPreference(ec);
+    cumulativePref += pref;
+  });
+  if (cumulativePref > 0) breakpointSet.add(cumulativePref);
+  
+  // ============================================================
+  // 第二阶段：处理 ESOP 行权触发点 (Exercise Trigger Points)
+  // 
+  // 这是一个迭代过程，因为 ESOP 行权会稀释分母，
+  // 从而改变下一个 ESOP 的行权断点。
+  // 
+  // 关键公式：
+  //   BP_ESOP = cumulativePref + (StrikePrice × ActiveCommonShares)
+  // 
+  // 其中 ActiveCommonShares 是动态累加的：
+  //   - 初始 = 所有 Common 证券的股数之和（不含 ESOP）
+  //   - 每解锁一个 ESOP，加上该 ESOP 的有效股数
+  // 
+  // 为什么 ActiveCommonShares 只包含 Common 和已解锁的 ESOP？
+  // 因为 ESOP 的行权价决定了其何时进入"实值状态"。
+  // 在 ESOP 解锁前，只有 Common 股东享有剩余价值分配权。
+  // ESOP 解锁后，ESOP 持有者与 Common 股东按比例分配剩余价值。
+  // ============================================================
+  
+  // 收集所有 ESOP 并按行权价排序
+  const esopClasses = sortedClasses
+    .filter(ec => ec.type === 'esop' && ec.exercisePrice && ec.exercisePrice > 0)
+    .sort((a, b) => (a.exercisePrice || 0) - (b.exercisePrice || 0));
+  
+  if (esopClasses.length > 0) {
+    // 计算初始 ActiveCommonShares = 所有 Common 证券的股数之和
+    // 注意：这里只包含 Common 类型，不包含 ESOP
+    let activeCommonShares = sortedClasses
+      .filter(ec => ec.type === 'common')
+      .reduce((sum, ec) => sum + getEffectiveSharesAtBreakpoint(ec, 0), 0);
+    
+    // 迭代处理每个 ESOP
+    esopClasses.forEach(esop => {
+      const exercisePrice = esop.exercisePrice || 0;
+      // 计算该 ESOP 触发时的企业总价值断点
+      // BP_ESOP = cumulativePref + (StrikePrice × ActiveCommonShares)
+      const triggerEV = cumulativePref + (exercisePrice * activeCommonShares);
+      
+      if (triggerEV > 0 && triggerEV < totalEquityValue) {
+        breakpointSet.add(triggerEV);
+      }
+      
+      // 更新 ActiveCommonShares：该 ESOP 解锁后，普通股股数增加
+      const esopShares = getEffectiveSharesAtBreakpoint(esop, triggerEV);
+      activeCommonShares += esopShares;
+    });
+  }
+  
+  // ============================================================
+  // 第三阶段：添加终点
+  // ============================================================
+  if (totalEquityValue > 0) breakpointSet.add(totalEquityValue);
+  
+  // 排序并返回
+  return [...breakpointSet].sort((a, b) => a - b);
+}
+
+/**
+ * ============================================================
  * 执行 OPM 完整估值计算
  * 
- * ============================================================
  * 核心算法逻辑（符合 AICPA 估值指南）
  * ============================================================
  * 
- * 第一步：构建断点分配表 (Breakpoint Allocation Table)
+ * 第一步：构建断点矩阵
+ * - 将所有证券的清算优先权累积值和 ESOP 行权价统一排序
+ * - 形成递增的断点序列 [K₀, K₁, K₂, ..., Kₙ]
  * 
- * 断点分配表是 OPM 估值中最核心的审计追溯工具。
- * 它将企业价值从 0 到 Total Equity Value 划分为多个区间（Tranche），
- * 每个区间对应一个资本结构层级的清算优先权范围。
+ * 第二步：计算每个断点的 Black-Scholes 期权价值
+ * - 对每个断点 Kᵢ，计算 C(Kᵢ) = S·N(d₁) - Kᵢ·e^(-rT)·N(d₂)
  * 
- * 对于每个断点 K，我们计算：
- *   - C(K) = S·N(d1) - K·e^(-rT)·N(d2)  (看涨期权价值)
+ * 第三步：计算增量价值（Tranche Value）
+ * - Vᵢ = C(Kᵢ₋₁) - C(Kᵢ)
+ * - 由于 C(K) 是 K 的单调递减函数，Vᵢ > 0 恒成立
  * 
- * 关键公式：Tranche Value = C(Lower) - C(Upper)
+ * 第四步：瀑布分配（Waterfall Allocation）
+ * - 每个区间 [Kᵢ₋₁, Kᵢ] 的分配规则取决于该区间的位置：
  * 
- * 为什么使用 C(Lower) - C(Upper)？
+ *   Tranche 1 [0, cumulativePref]:
+ *     100% 价值分配给 Preferred Shares
+ *     Common 和 ESOP 的有效股数 = 0
+ *     （因为清算优先权要求 Preferred 先获得全额分配）
  * 
- * 根据 Black-Scholes 模型，看涨期权价值 C(K) 是行权价 K 的
- * 单调递减函数。即：K 越大，C(K) 越小。
+ *   Tranche 2 [cumulativePref, BP_ESOP]:
+ *     100% 价值分配给 Common Shares
+ *     ESOP 的有效股数 = 0
+ *     （因为 ESOP 尚未进入实值状态）
  * 
- * 因此对于 Lower < Upper，有 C(Lower) > C(Upper)，
- * 所以 Tranche Value = C(Lower) - C(Upper) > 0。
+ *   Tranche 3 [BP_ESOP, S]:
+ *     价值按比例分配给 Common 和 ESOP
+ *     ESOP 的有效股数 = 实际 ESOP 股数
+ *     分母 = Common Shares + ESOP Shares
  * 
- * 这确保了：
- * 1. 每个 Tranche 的价值为正数
- * 2. 所有 Tranche 的价值之和 = C(0) - C(TotalEquityValue) = Total Equity Value
- * 3. 符合 AICPA 估值指南的要求
- * 
- * 第二步：分配 Tranche 价值到各资本结构层级
- * 
- * 每个 Tranche 的价值按照各层级在完全稀释基础上的持股比例
- * （Pro-rata）进行分配。分配比例基于各层级的完全稀释股数。
- * 
- * 第三步：汇总每个层级的总价值
- * 
- * 将每个 Tranche 中分配给该层级的值加总，得到该层级的期权价值。
- * 如果有参与权（Participation），还需加上参与权价值。
- * 
- * 最终验证：各层分配总额必须等于输入的 Total Equity Value
+ * 第五步：汇总各层级总价值
+ * - 将每个层级在所有区间中分配到的价值加总
+ * - 验证：各层分配总额 = Total Equity Value
  * ============================================================
  */
 export function performOPMValuation(totalEquityValue, equityClasses, volatility, riskFreeRate, timeToExit) {
   const results = [];
-  const breakpoints = calculateBreakpoints(equityClasses);
-  const fullyDilutedShares = calculateFullyDilutedShares(equityClasses, totalEquityValue);
   const sortedClasses = [...equityClasses].sort((a, b) => b.seniority - a.seniority);
   
   // ============================================================
-  // 第一步：构建断点分配表 (Breakpoint Allocation Table)
+  // 第一步：构建断点矩阵
+  // 将所有证券的清算优先权累积值和 ESOP 行权价统一排序
   // ============================================================
+  const uniqueBreakpoints = buildBreakpointMatrix(equityClasses, totalEquityValue);
   
-  const breakpointValues = [0];
-  breakpoints.forEach(bp => {
-    if (bp.value > 0 && !breakpointValues.includes(bp.value)) breakpointValues.push(bp.value);
+  // 计算 cumulativePref 用于瀑布分配判断
+  let cumulativePref = 0;
+  sortedClasses.forEach(ec => {
+    const pref = calculateClassLiquidationPreference(ec);
+    cumulativePref += pref;
   });
-  if (!breakpointValues.includes(totalEquityValue)) breakpointValues.push(totalEquityValue);
-  const uniqueBreakpoints = [...new Set(breakpointValues)].sort((a, b) => a - b);
   
+  // ============================================================
+  // 第二步：计算每个断点的 Black-Scholes 期权价值
+  // ============================================================
   const breakpointOptions = uniqueBreakpoints.map(K => {
     const option = calculateCallOption(totalEquityValue, K, riskFreeRate, volatility, timeToExit);
     return { strikePrice: K, ...option };
   });
   
+  // ============================================================
+  // 第三步 & 第四步：构建断点分配表
+  // 计算每个区间的增量价值，并按瀑布规则分配
+  // ============================================================
   const breakpointTable = [];
   for (let i = 0; i < uniqueBreakpoints.length - 1; i++) {
     const lower = uniqueBreakpoints[i];
@@ -277,30 +373,86 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
     const trancheValue = Math.max(0, lowerOption.value - upperOption.value);
     
     // ============================================================
-    // 找出该区间内享有分配权的层级
-    // 分配权判断：清算优先权 <= Upper 的层级有权参与该区间的分配
-    // 每个层级显示其名称、类型、分配比例和分配金额
+    // 瀑布分配规则（Waterfall Allocation Rules）
+    // 
+    // 根据断点位置确定分配规则：
+    // 
+    // 1. 如果 upper <= cumulativePref:
+    //    该区间完全属于清算优先权范围。
+    //    只有 Preferred 参与分配，Common 和 ESOP 获得 0。
+    //    因为清算优先权要求 Preferred 先获得全额分配。
+    // 
+    // 2. 如果 lower >= cumulativePref 且 upper <= BP_ESOP:
+    //    该区间属于 Common 独占范围。
+    //    ESOP 尚未进入实值状态，有效股数 = 0。
+    //    100% 价值分配给 Common。
+    // 
+    // 3. 如果 lower >= BP_ESOP:
+    //    该区间属于 Common 和 ESOP 共享范围。
+    //    ESOP 已进入实值状态，按比例分配。
+    // 
+    // 4. 跨区间情况（如 lower < cumulativePref < upper）:
+    //    该区间跨越多个分配区域。
+    //    所有清算优先权 <= upper 的证券参与分配。
     // ============================================================
+    
+    // 确定该区间内享有分配权的层级
+    // 只有清算优先权 <= upper 的层级才有权参与
     const eligibleClasses = sortedClasses.filter(ec => {
       const pref = calculateClassLiquidationPreference(ec);
       return pref <= upper;
     });
     
-    const totalEligibleShares = eligibleClasses.reduce((sum, ec) => {
-      return sum + (ec.shares * (ec.conversionRatio || 1));
-    }, 0);
-    
+    // ============================================================
+    // 计算该区间内各层级的有效股数
+    // 
+    // 瀑布规则：
+    // - 在清算优先权范围内（upper <= cumulativePref）：
+    //   Common 和 ESOP 的有效股数 = 0
+    // - 在 Common 独占范围内（lower >= cumulativePref 且 upper <= BP_ESOP）：
+    //   ESOP 的有效股数 = 0
+    // - 在共享范围内（lower >= BP_ESOP）：
+    //   ESOP 按实际股数参与
+    // ============================================================
     const allocations = eligibleClasses.map(ec => {
-      const ecShares = ec.shares * (ec.conversionRatio || 1);
-      const proportion = totalEligibleShares > 0 ? ecShares / totalEligibleShares : 0;
+      let ecShares = 0;
+      
+      if (ec.type === 'common' || ec.type === 'esop') {
+        if (upper <= cumulativePref) {
+          // 清算优先权范围内：Common 和 ESOP 获得 0
+          ecShares = 0;
+        } else if (ec.type === 'esop') {
+          // ESOP：只有在其行权价对应的断点 <= lower 时才计入
+          // 即该 ESOP 在此价值区间已处于实值状态
+          ecShares = getEffectiveSharesAtBreakpoint(ec, lower);
+        } else {
+          // Common：始终计入（但不在清算优先权范围内）
+          ecShares = getEffectiveSharesAtBreakpoint(ec, lower);
+        }
+      } else {
+        // Preferred 和其他类型：始终计入
+        ecShares = getEffectiveSharesAtBreakpoint(ec, lower);
+      }
+      
       return {
         className: ec.name,
         type: ec.type,
         shares: ec.shares,
+        effectiveShares: ecShares,
+        exercisePrice: ec.exercisePrice || 0,
         conversionRatio: ec.conversionRatio || 1,
-        proportion,
-        amount: trancheValue * proportion
+        proportion: 0,
+        amount: 0
       };
+    });
+    
+    // 计算该区间内的总有效股数
+    const totalEligibleShares = allocations.reduce((sum, a) => sum + a.effectiveShares, 0);
+    
+    // 按比例分配该区间的增量价值
+    allocations.forEach(a => {
+      a.proportion = totalEligibleShares > 0 ? a.effectiveShares / totalEligibleShares : 0;
+      a.amount = trancheValue * a.proportion;
     });
     
     breakpointTable.push({
@@ -311,13 +463,12 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
       trancheValue,
       allocations,
       // 计算公式说明：C(Lower) - C(Upper)
-      // 因为 C(K) 是 K 的单调递减函数，所以 C(Lower) > C(Upper)
       formula: `C($${lower.toLocaleString()}) - C($${upper.toLocaleString()}) = $${lowerOption.value.toFixed(2)} - $${upperOption.value.toFixed(2)} = $${trancheValue.toFixed(2)}`
     });
   }
   
   // ============================================================
-  // 第二步：汇总每个资本结构层级的总价值
+  // 第五步：汇总每个资本结构层级的总价值
   // 
   // 将每个 Tranche 中分配给该层级的值加总，
   // 得到该层级的期权价值（Option Value）。
@@ -329,6 +480,7 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
   // ============================================================
   
   sortedClasses.forEach((equityClass, index) => {
+    // 计算该层级的行权价（Strike Price）
     let strikePrice = 0;
     for (let i = 0; i < index; i++) {
       strikePrice += calculateClassLiquidationPreference(sortedClasses[i]);
@@ -348,11 +500,12 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
     
     switch (equityClass.type) {
       case 'preferred':
+        // 参与权（Participation）：在清算优先权之后，按持股比例参与剩余分配
         if (equityClass.participation) {
           const totalShares = equityClasses.reduce((sum, ec) => sum + (ec.shares * (ec.conversionRatio || 1)), 0);
           const classShares = equityClass.shares * (equityClass.conversionRatio || 1);
           const participationRatio = totalShares > 0 ? classShares / totalShares : 0;
-          const lastBreakpoint = breakpoints.length > 0 ? breakpoints[breakpoints.length - 1].value : 0;
+          const lastBreakpoint = uniqueBreakpoints.length > 0 ? uniqueBreakpoints[uniqueBreakpoints.length - 1] : 0;
           participationValue = Math.max(0, totalEquityValue - lastBreakpoint) * participationRatio;
         }
         totalValue = optionValue + participationValue;
@@ -365,6 +518,7 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
         valuePerShare = effectiveShares > 0 ? totalValue / effectiveShares : 0;
         break;
       case 'esop': {
+        // ESOP 价值 = 看涨期权价值 × 已行权比例 + 看涨期权价值 × 未行权比例 × 行权概率
         const esopCallOption = calculateCallOption(totalEquityValue, equityClass.exercisePrice || 0, riskFreeRate, volatility, timeToExit);
         const vestedRatio = equityClass.vestedPercentage || 0;
         const vestingProbability = equityClass.probabilityOfVesting || 0.5;
@@ -375,6 +529,7 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
         break;
       }
       case 'safe': {
+        // SAFE 价值：取估值上限模式和折扣率模式中的较高者
         let safeValue = 0;
         if (equityClass.valuationCap && equityClass.valuationCap > 0) {
           const capRatio = Math.min(1, equityClass.valuationCap / totalEquityValue);
@@ -391,11 +546,13 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
         break;
       }
       case 'convertible': {
+        // 可转换债券：取"债券价值"和"转换价值"中的较高者
         const principal = equityClass.principal || 0;
         const accruedInterest = principal * (equityClass.interestRate || 0) * timeToExit;
         const totalDebtValue = principal + accruedInterest;
         const conversionPrice = equityClass.conversionPrice || (principal / (equityClass.shares || 1));
         const conversionShares = totalDebtValue / conversionPrice;
+        const fullyDilutedShares = sortedClasses.reduce((sum, ec) => sum + getEffectiveSharesAtBreakpoint(ec, totalEquityValue), 0);
         const conversionValue = (totalEquityValue / fullyDilutedShares) * conversionShares;
         optionValue = Math.max(totalDebtValue, conversionValue);
         totalValue = optionValue;
@@ -404,6 +561,7 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
         break;
       }
       case 'warrant': {
+        // 认股权证：看涨期权价值
         const warrantCallOption = calculateCallOption(totalEquityValue, equityClass.exercisePrice || 0, riskFreeRate, volatility, timeToExit);
         optionValue = warrantCallOption.value;
         totalValue = optionValue;
@@ -439,7 +597,7 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
         riskFreeRate,
         timeToExit,
         totalEquityValue,
-        fullyDilutedShares
+        fullyDilutedShares: effectiveShares
       }
     });
   });
@@ -542,3 +700,4 @@ export function generateCalculationExplanation(result, lang = 'zh') {
     `   = $${(totalValue / (calculations.fullyDilutedShares || 1)).toFixed(4)}`
   ].join('\n');
 }
+
