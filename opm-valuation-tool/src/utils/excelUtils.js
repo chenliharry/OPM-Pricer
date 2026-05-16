@@ -37,26 +37,78 @@ export function exportToExcel(results, parameters, equityClasses, breakpointTabl
   const wb = XLSX.utils.book_new();
 
   // ============================================================
-  // Sheet 1: 估值参数 (Parameters)
+  // Sheet 1: 资本结构 (Capital Structure) - 与模板格式一致
+  // 使用与 downloadTemplate 相同的表头结构，确保导出的文件
+  // 可以直接被 importFromExcel 重新导入
   // ============================================================
+  const header = [
+    lang === 'en' ? 'Class Name' : '层级名称',
+    lang === 'en' ? 'Type' : '类型 (Type)',
+    lang === 'en' ? 'Shares' : '股本数量 (Shares)',
+    lang === 'en' ? 'Price/Share' : '每股价格 (Price/Share)',
+    lang === 'en' ? 'Liq. Preference' : '清算优先权 (Liquidation Preference)',
+    lang === 'en' ? 'Participation' : '参与权 (Participation)',
+    lang === 'en' ? 'Conversion Ratio' : '转股比例 (Conversion Ratio)',
+    lang === 'en' ? 'Seniority' : '优先级 (Seniority)',
+    lang === 'en' ? 'Exercise Price' : '行权价格 (Exercise Price)',
+    lang === 'en' ? 'Vested %' : '已行权比例 (Vested %)',
+    lang === 'en' ? 'Vesting Prob.' : '行权概率 (Vesting Probability)',
+    lang === 'en' ? 'Investment Amt' : '投资金额 (Investment Amount)',
+    lang === 'en' ? 'Valuation Cap' : '估值上限 (Valuation Cap)',
+    lang === 'en' ? 'Discount Rate' : '折扣率 (Discount Rate)',
+    lang === 'en' ? 'Principal' : '本金 (Principal)',
+    lang === 'en' ? 'Interest Rate' : '利率 (Interest Rate)',
+    lang === 'en' ? 'Conversion Price' : '转换价格 (Conversion Price)'
+  ];
+
+  // 将 equityClasses 转换为模板格式的行数据
+  const classRows = equityClasses.map(ec => [
+    ec.name,
+    ec.type,
+    ec.shares || 0,
+    ec.pricePerShare || '',
+    ec.liquidationPreference || '',
+    ec.participation ? (lang === 'en' ? 'Yes' : '是') : (lang === 'en' ? 'No' : '否'),
+    ec.conversionRatio || '',
+    ec.seniority || 0,
+    ec.exercisePrice || '',
+    ec.vestedPercentage || '',
+    ec.probabilityOfVesting || '',
+    ec.investmentAmount || '',
+    ec.valuationCap || '',
+    ec.discountRate || '',
+    ec.principal || '',
+    ec.interestRate || '',
+    ec.conversionPrice || ''
+  ]);
+
+  const capStructureData = [header, ...classRows];
+  const capStructureSheet = XLSX.utils.aoa_to_sheet(capStructureData);
+  XLSX.utils.book_append_sheet(wb, capStructureSheet, lang === 'en' ? 'Capital Structure' : '资本结构 (Capital Structure)');
+
+  // ============================================================
+  // Sheet 2: 估值参数 (Parameters) - 与模板格式一致
+  // ============================================================
+  const paramHeader = [
+    lang === 'en' ? 'Parameter' : '参数 (Parameter)',
+    lang === 'en' ? 'Value' : '值 (Value)',
+    lang === 'en' ? 'Description' : '说明 (Description)'
+  ];
+
   const paramData = [
-    [lang === 'en' ? 'Parameter' : '参数', lang === 'en' ? 'Value' : '值', lang === 'en' ? 'Description' : '说明'],
-    [lang === 'en' ? 'Total Equity Value (Total Equity Value)' : '企业总权益价值 (Total Equity Value)', parameters.totalEquityValue, 
+    paramHeader,
+    [lang === 'en' ? 'Total Equity Value' : '企业总权益价值 (Total Equity Value)', parameters.totalEquityValue,
      lang === 'en' ? 'Enterprise value at valuation date' : '估值基准日的企业总价值'],
-    [lang === 'en' ? 'Volatility (Volatility, σ)' : '波动率 (Volatility, σ)', parameters.volatility,
-     lang === 'en' ? 'Annualized volatility' : '年化波动率'],
-    [lang === 'en' ? 'Risk-free Rate (Risk-free Rate, r)' : '无风险利率 (Risk-free Rate, r)', parameters.riskFreeRate,
-     lang === 'en' ? 'Annual risk-free rate' : '年化无风险利率'],
-    [lang === 'en' ? 'Time to Exit (Time to Exit, T)' : '预期期限 (Time to Exit, T)', parameters.timeToExit,
-     lang === 'en' ? 'Expected time to liquidity event (years)' : '预期退出时间（年）'],
-    ['', '', ''],
-    [lang === 'en' ? 'Capital Structure' : '资本结构 (Capital Structure)', '', ''],
-    [lang === 'en' ? 'Class Name' : '层级名称', lang === 'en' ? 'Type' : '类型', lang === 'en' ? 'Shares' : '股本数量 (Shares)'],
-    ...equityClasses.map(ec => [ec.name, getTypeLabel(ec.type, lang), ec.shares])
+    [lang === 'en' ? 'Volatility (σ)' : '波动率 (Volatility, σ)', parameters.volatility,
+     lang === 'en' ? 'Annualized volatility (e.g., 0.50 = 50%)' : '年化波动率（如 0.50 = 50%）'],
+    [lang === 'en' ? 'Risk-free Rate (r)' : '无风险利率 (Risk-free Rate, r)', parameters.riskFreeRate,
+     lang === 'en' ? 'Annual risk-free rate (e.g., 0.04 = 4%)' : '年化无风险利率（如 0.04 = 4%）'],
+    [lang === 'en' ? 'Time to Exit (T)' : '预期期限 (Time to Exit, T)', parameters.timeToExit,
+     lang === 'en' ? 'Expected time to liquidity event in years' : '预期退出时间（年）']
   ];
 
   const paramSheet = XLSX.utils.aoa_to_sheet(paramData);
-  XLSX.utils.book_append_sheet(wb, paramSheet, lang === 'en' ? 'Parameters' : '估值参数');
+  XLSX.utils.book_append_sheet(wb, paramSheet, lang === 'en' ? 'Parameters' : '估值参数 (Parameters)');
 
   // ============================================================
   // Sheet 2: 断点分配详情表 (Breakpoint Allocation Table)

@@ -166,28 +166,64 @@ const fieldConfig = {
 
 function EquityClassInput({ equityClass, onUpdate, onRemove, canRemove, lang }) {
   const [expanded, setExpanded] = useState(true);
-  // 跟踪每个字段是否被用户聚焦过（用于清除默认 0）
-  const [focusedFields, setFocusedFields] = useState({});
+  // 本地输入值缓存：用于在用户输入过程中保持原始字符串，
+  // 避免 parseFloat 将 "0." 或 "" 错误转换为 0
+  const [inputCache, setInputCache] = useState({});
 
   const handleChange = (field, value) => {
     onUpdate(equityClass.id, { [field]: value });
   };
 
-  // 当用户聚焦输入框时，如果当前值为 0 则清空
-  const handleFocus = (field) => {
-    if (!focusedFields[field]) {
-      setFocusedFields(prev => ({ ...prev, [field]: true }));
-      if (equityClass[field] === 0 || equityClass[field] === '0') {
-        handleChange(field, '');
-      }
+  // ============================================================
+  // 数字输入框的 onChange 处理
+  // 
+  // 核心问题：parseFloat('') || 0 = 0，导致用户删除 0 后输入新数字时，
+  // 0 会"堵"在前面（如输入 .5 变成 0.5 没问题，但输入 1 时中间状态
+  // 可能被错误转换）。
+  // 
+  // 解决方案：
+  // 1. 使用 inputCache 保存用户输入的原始字符串
+  // 2. 只在实际值变化时才更新 state（避免 0 → '' → 0 的循环）
+  // 3. 在 blur 时做最终的数字转换
+  // ============================================================
+  const handleNumberChange = (field, rawValue) => {
+    // 保存原始输入到缓存
+    setInputCache(prev => ({ ...prev, [field]: rawValue }));
+    
+    // 如果输入为空，不更新 state（保持当前值）
+    if (rawValue === '') return;
+    
+    // 如果输入以 0 开头且长度 > 1（如 "01"），不做特殊处理
+    // 让 parseFloat 自然处理
+    const num = parseFloat(rawValue);
+    if (!isNaN(num)) {
+      handleChange(field, num);
     }
   };
 
-  // 当用户离开输入框时，如果为空则恢复为 0
-  const handleBlur = (field) => {
-    if (equityClass[field] === '' || equityClass[field] === undefined || equityClass[field] === null) {
-      handleChange(field, 0);
+  // 当用户聚焦输入框时，如果当前值为 0 则清空输入缓存
+  const handleFocus = (field) => {
+    if (!inputCache[field] && (equityClass[field] === 0 || equityClass[field] === '0')) {
+      setInputCache(prev => ({ ...prev, [field]: '' }));
     }
+  };
+
+  // 当用户离开输入框时，如果缓存为空则恢复为 0
+  const handleBlur = (field) => {
+    const cached = inputCache[field];
+    if (cached === '' || cached === undefined || cached === null) {
+      handleChange(field, 0);
+      setInputCache(prev => ({ ...prev, [field]: undefined }));
+    }
+  };
+
+  // 获取输入框的显示值
+  const getInputValue = (field) => {
+    // 如果有缓存值，优先使用缓存（用户在输入过程中）
+    if (inputCache[field] !== undefined) return inputCache[field];
+    // 否则使用 state 中的值
+    const val = equityClass[field];
+    return val === 0 || val === '0' ? '' : (val ?? '');
   };
 
   const config = typeConfig[equityClass.type] || typeConfig.common;
@@ -303,8 +339,8 @@ function EquityClassInput({ equityClass, onUpdate, onRemove, canRemove, lang }) 
                   </label>
                   <input
                     type="number"
-                    value={equityClass[field] ?? 0}
-                    onChange={(e) => handleChange(field, parseFloat(e.target.value) || 0)}
+                    value={getInputValue(field)}
+                    onChange={(e) => handleNumberChange(field, e.target.value)}
                     onFocus={() => handleFocus(field)}
                     onBlur={() => handleBlur(field)}
                     step={fieldConf.step}
@@ -314,6 +350,7 @@ function EquityClassInput({ equityClass, onUpdate, onRemove, canRemove, lang }) 
                   />
                 </div>
               );
+
             })}
           </div>
         </div>

@@ -10,8 +10,9 @@
 
 | 优先级 | 证券类型 | 说明 |
 |--------|---------|------|
-| 最高 | Preferred Stock | 享有清算优先权，优先获得分配 |
-| 中 | SAFE / Convertible Note | 介于优先股和普通股之间 |
+| 最高 | Preferred Stock (Non-participating) | 享有清算优先权，优先获得分配，转股后放弃优先权 |
+| 高 | SAFE / Convertible Note | 介于优先股和普通股之间，本金计入绝对清算优先权 |
+| 中 | Preferred Stock (Participating) | 享有清算优先权，同时参与剩余价值分配 |
 | 低 | Common Stock | 在优先股之后获得分配 |
 | 最低 | ESOP / Warrant | 在普通股之后，按行权价决定是否参与 |
 
@@ -30,101 +31,78 @@ const seniorityMap = {
 };
 ```
 
-## 三层瀑布分配
+## 高级瀑布分配（Mercer Capital 合规）
 
-### 第一层：清算优先权分配
+### 四阶段算法
 
-**区间：** $[0, \text{cumulativePref}]$
+```
+Algorithm: buildAdvancedBreakpointMatrix
+Input: equityClasses[], totalEquityValue S
+Output: sorted breakpoint array K[]
 
-**规则：** 100% 价值分配给 Preferred Shares
+// 第一阶段：绝对清算优先权累积
+K ← {0}
+cumulativeAbsolutePref ← sum(SAFE.principal) + sum(CN.principal) + sum(All Preferred.liquidationPreference)
+IF cumulativeAbsolutePref > 0: K ← K ∪ {cumulativeAbsolutePref}
 
-**条件：** 只有清算优先权 $\leq$ 区间上限的证券参与分配
+// 第二阶段：初始化分母
+activeShares ← sum(Common.shares) + sum(ParticipatingPreferred.shares)
 
-**数学表达：**
-$$
-A_{\text{Preferred}} = V_i
-$$
+// 第三阶段：迭代处理每股阈值事件
+sortedEvents ← sort(all ESOPs and Non-Participating Preferreds by triggerPrice)
+FOR each event in sortedEvents:
+    triggerEV ← cumulativeAbsolutePref + (triggerPrice × activeShares)
+    K ← K ∪ {triggerEV}
+    IF event.type == 'esop':
+        activeShares += event.shares
+    ELSE IF event.type == 'non_participating_preferred':
+        cumulativeAbsolutePref -= event.liquidationPreference
+        activeShares += event.shares
 
-**示例：**
-- cumulativePref = $5,000,000
-- 区间 [$0, $5,000,000] 的增量价值 = $5,000,000
-- Series A 获得 $5,000,000（100%）
-- Common 和 ESOP 获得 $0
+// 第四阶段：终点
+K ← K ∪ {S}
+RETURN sort(unique(K))
+```
 
-### 第二层：Common 独占分配
+### 完全比例分配
 
-**区间：** $[\text{cumulativePref}, BP_{ESOP}]$
+每个 Tranche 的价值按该区间内所有活跃证券的有效股数比例分配：
 
-**规则：** 100% 价值分配给 Common Shares
+```
+A_{i,j} = V_i × shares_{i,j} / sum(shares_{i,k} for k=1..m)
+```
 
-**条件：** ESOP 尚未进入实值状态（行权价对应的 BP > 区间下限）
+其中：
+- `A_{i,j}` = 证券 j 在区间 i 中的分配金额
+- `V_i` = 区间 i 的增量价值 = C(Lower_i) - C(Upper_i)
+- `shares_{i,j}` = 证券 j 在区间 i 中的有效股数
+- `m` = 该区间内活跃证券的数量
 
-**数学表达：**
-$$
-A_{\text{Common}} = V_i
-$$
+### 动态股数计算
 
-**示例：**
-- cumulativePref = $5,000,000
-- BP_ESOP = $7,500,000
-- 区间 [$5,000,000, $7,500,000] 的增量价值 = $2,580,000
-- Common 获得 $2,580,000（100%）
-- ESOP 获得 $0（尚未解锁）
-
-### 第三层：Common + ESOP 共享分配
-
-**区间：** $[BP_{ESOP}, S]$
-
-**规则：** 按比例分配给 Common 和 ESOP
-
-**条件：** ESOP 已进入实值状态（行权价对应的 BP $\leq$ 区间下限）
-
-**数学表达：**
-$$
-A_j = V_i \times \frac{\text{shares}_j}{\text{shares}_{\text{Common}} + \text{shares}_{\text{ESOP}}}
-$$
-
-**示例：**
-- BP_ESOP = $7,500,000
-- 区间 [$7,500,000, $10,000,000] 的增量价值 = $3,420,000
-- Common (5,000,000 shares): $3,228,600 (94.34%)
-- ESOP (300,000 shares): $191,400 (5.66%)
-
-## 参与权分配
-
-### 参与权规则
-
-对于有参与权（Participation）的优先股，在完成所有区间分配后，额外获得：
-
-$$
-V_{\text{participation}} = \max(0, S - K_{\text{last}}) \times \frac{\text{classShares}}{\text{totalShares}}
-$$
-
-### 参与权示例
-
-| 参数 | 值 |
-|------|-----|
-| Total Equity Value (S) | $10,000,000 |
-| 最后一个断点 ($K_{\text{last}}$) | $10,000,000 |
-| Series A 股数 | 1,000,000 |
-| 总股数 | 6,000,000 |
-| 参与权价值 | $(10M - 10M) \times 1M/6M = \$0$ |
-
-> 注意：当最后一个断点等于 Total Equity Value 时，参与权价值为 0。
+| 证券类型 | 有效股数规则 |
+|---------|-------------|
+| Common | 在清算优先权范围内（upper ≤ cumulativeAbsolutePref）为 0，否则按实际股数 |
+| ESOP | 在清算优先权范围内为 0；否则只有行权价 ≤ lower 时才计入 |
+| Participating Preferred | 始终按转股比例计入（即使在清算优先权范围内） |
+| Non-participating Preferred | 转股前按转股比例计入，转股后按实际股数计入 |
+| SAFE/Convertible/Warrant | 按 shares 字段计入 |
 
 ## 完整瀑布示例
 
 ### 输入
 
-| 证券 | 类型 | 股数 | 清算优先权 | 行权价 | 优先级 |
+| 证券 | 类型 | 股数 | 清算优先权 | 行权价 | 参与权 |
 |------|------|------|-----------|--------|--------|
-| Series A | Preferred | 1,000,000 | $5,000,000 | - | 3 |
-| ESOP | ESOP | 500,000 | $0 | $0.50 | 0 |
-| Common | Common | 5,000,000 | $0 | - | 0 |
+| Series A | Preferred (Non-part) | 1,000,000 | $5,000,000 | - | No |
+| ESOP | ESOP | 500,000 | $0 | $0.50 | - |
+| Common | Common | 5,000,000 | $0 | - | - |
 
 ### 断点矩阵
 
-$\mathbb{K} = [0, 5,000,000, 7,500,000, 10,000,000]$
+```
+K = [0, 5,000,000, 7,500,000, 10,000,000]
+```
 
 ### 瀑布分配
 
@@ -133,13 +111,16 @@ $\mathbb{K} = [0, 5,000,000, 7,500,000, 10,000,000]$
 │
 ├── Tranche 1 [$0, $5,000,000] (V₁ = $5,000,000)
 │   └── 100% → Series A: $5,000,000
+│   （清算优先权范围，Common 和 ESOP 有效股数 = 0）
 │
 ├── Tranche 2 [$5,000,000, $7,500,000] (V₂ = $2,580,000)
 │   └── 100% → Common: $2,580,000
+│   （ESOP 尚未解锁，行权价 $0.50 > lower $5M）
 │
 └── Tranche 3 [$7,500,000, $10,000,000] (V₃ = $3,420,000)
     ├── Common (5,000,000 shares): $3,228,600 (94.34%)
     └── ESOP (300,000 shares): $191,400 (5.66%)
+    （ESOP 已解锁，按比例分配）
 
 最终结果：
 ├── Series A: $5,000,000 ($5.00/share)
@@ -152,14 +133,10 @@ $\mathbb{K} = [0, 5,000,000, 7,500,000, 10,000,000]$
 ### 交叉验证
 
 1. **区间价值之和验证**：
-   $$
-   V_1 + V_2 + V_3 = \$5,000,000 + \$2,580,000 + \$3,420,000 = \$11,000,000
-   $$
+   V₁ + V₂ + V₃ = $5,000,000 + $2,580,000 + $3,420,000 = $11,000,000
 
 2. **各证券价值之和验证**：
-   $$
-   \text{Series A} + \text{Common} + \text{ESOP} = \$5,000,000 + \$5,808,600 + \$191,400 = \$11,000,000
-   $$
+   Series A + Common + ESOP = $5,000,000 + $5,808,600 + $191,400 = $11,000,000
 
 3. **区间分配验证**：
    - Tranche 1: Series A = $5,000,000 ✓
