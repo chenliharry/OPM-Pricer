@@ -293,32 +293,63 @@ export function getTypeLabel(type, lang) {
 
 /**
  * 生成智能层级名称
+ * 
+ * 关键逻辑：先剥离上一次自动添加的后缀，再重新生成。
+ * 避免名称越来越长的问题（如 "Series A (清算 @ $1)(清算 @ $1)"）。
+ * 
+ * 后缀匹配模式：以 " (" 开头，包含 "@" 或 "$" 或 "行权" 或 "清算" 或 "普通股" 等关键词
  * @param {object} ec - 资本结构层级
  * @param {string} lang - 语言
  * @returns {string} 智能名称
  */
 export function generateSmartName(ec, lang = 'zh') {
+  // ============================================================
+  // 第一步：剥离上一次自动添加的后缀
+  // 
+  // 匹配模式：以 " (" 开头，包含 "@" 或 "$" 或中英文关键词
+  // 例如：
+  //   "Series A (清算 @ $1)" → "Series A"
+  //   "ESOP Pool (ESOP @ Strike $0.5)" → "ESOP Pool"
+  //   "Common Stock (普通股 @ $0.1)" → "Common Stock"
+  // 
+  // 使用正则匹配：从最后一个 " (" 开始到结尾的内容
+  // ============================================================
+  let baseName = ec.name;
+  // 匹配以 " (" 开头，包含特定关键词的后缀
+  const suffixPattern = /\s*\(.*(?:@|$|行权|清算|普通股|Liq|Common|Strike|ESOP|SAFE|可转债|Conv|Warrant).*\)$/;
+  if (suffixPattern.test(baseName)) {
+    // 找到最后一个 " (" 的位置
+    const lastParen = baseName.lastIndexOf(' (');
+    if (lastParen > 0) {
+      baseName = baseName.substring(0, lastParen);
+    }
+  }
+  
+  // ============================================================
+  // 第二步：根据类型生成新的后缀
+  // ============================================================
   const templates = {
     preferred: lang === 'zh' 
-      ? `${ec.name} (清算 @ $${ec.pricePerShare || 0})`
-      : `${ec.name} (Liq @ $${ec.pricePerShare || 0})`,
+      ? `${baseName} (清算 @ $${ec.pricePerShare || 0})`
+      : `${baseName} (Liq @ $${ec.pricePerShare || 0})`,
     common: lang === 'zh'
-      ? `${ec.name} (普通股 @ $${ec.pricePerShare || 0})`
-      : `${ec.name} (Common @ $${ec.pricePerShare || 0})`,
+      ? `${baseName} (普通股 @ $${ec.pricePerShare || 0})`
+      : `${baseName} (Common @ $${ec.pricePerShare || 0})`,
     esop: lang === 'zh'
-      ? `${ec.name} (ESOP @ 行权 $${ec.exercisePrice || 0})`
-      : `${ec.name} (ESOP @ Strike $${ec.exercisePrice || 0})`,
+      ? `${baseName} (ESOP @ 行权 $${ec.exercisePrice || 0})`
+      : `${baseName} (ESOP @ Strike $${ec.exercisePrice || 0})`,
     safe: lang === 'zh'
-      ? `${ec.name} (SAFE $${(ec.investmentAmount || 0).toLocaleString()})`
-      : `${ec.name} (SAFE $${(ec.investmentAmount || 0).toLocaleString()})`,
+      ? `${baseName} (SAFE $${(ec.investmentAmount || 0).toLocaleString()})`
+      : `${baseName} (SAFE $${(ec.investmentAmount || 0).toLocaleString()})`,
     convertible: lang === 'zh'
-      ? `${ec.name} (可转债 $${(ec.principal || 0).toLocaleString()})`
-      : `${ec.name} (Conv. $${(ec.principal || 0).toLocaleString()})`,
+      ? `${baseName} (可转债 $${(ec.principal || 0).toLocaleString()})`
+      : `${baseName} (Conv. $${(ec.principal || 0).toLocaleString()})`,
     warrant: lang === 'zh'
-      ? `${ec.name} (Warrant @ $${ec.exercisePrice || 0})`
-      : `${ec.name} (Warrant @ $${ec.exercisePrice || 0})`,
+      ? `${baseName} (Warrant @ $${ec.exercisePrice || 0})`
+      : `${baseName} (Warrant @ $${ec.exercisePrice || 0})`,
   };
-  return templates[ec.type] || ec.name;
+  return templates[ec.type] || baseName;
 }
+
 
 export default locales;

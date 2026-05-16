@@ -14,7 +14,7 @@
  * - Excel 导入/导出（含全局参数）
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Calculator, Upload, Download, FileSpreadsheet, TrendingUp, Settings, Info, Plus, Globe } from 'lucide-react';
 import { performOPMValuation } from './utils/valuationUtils';
 import { importFromExcel, exportToExcel, downloadTemplate } from './utils/excelUtils';
@@ -26,9 +26,14 @@ import ParametersPanel from './components/ParametersPanel';
 function App() {
   // 语言状态
   const [lang, setLang] = useState('zh');
+  // 引用最后一个添加的层级，用于滚动动画
+  const lastAddedRef = useRef(null);
+  // 动画状态：新添加的层级 ID
+  const [animatingId, setAnimatingId] = useState(null);
 
   // 状态管理 - 包含多种股权类型的示例数据
   const [equityClasses, setEquityClasses] = useState([
+
     {
       id: 'equity-1',
       name: 'Series A Preferred',
@@ -116,10 +121,11 @@ function App() {
     setTimeout(() => setNotification(null), 3000);
   };
 
-  // 添加新的资本结构层级（智能命名）
+  // 添加新的资本结构层级（智能命名 + 滚动动画）
   const addEquityClass = () => {
+    const newId = `equity-${Date.now()}`;
     const newClass = {
-      id: `equity-${Date.now()}`,
+      id: newId,
       name: t('defaultName', { n: equityClasses.length + 1 }, lang),
       type: 'common',
       shares: 0,
@@ -130,7 +136,25 @@ function App() {
       seniority: equityClasses.length
     };
     setEquityClasses([...equityClasses, newClass]);
+    
+    // 触发动画：标记新添加的层级 ID
+    setAnimatingId(newId);
+    
+    // 滚动到新添加的层级位置
+    setTimeout(() => {
+      const element = document.getElementById(`equity-card-${newId}`);
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // 添加高亮闪烁效果
+        element.classList.add('ring-2', 'ring-apple-blue-500', 'ring-offset-2');
+        setTimeout(() => {
+          element.classList.remove('ring-2', 'ring-apple-blue-500', 'ring-offset-2');
+        }, 2000);
+      }
+      setAnimatingId(null);
+    }, 100);
   };
+
 
   // 删除资本结构层级
   const removeEquityClass = (id) => {
@@ -345,9 +369,18 @@ function App() {
             lang={lang}
           />
         )}
+        {/* 浮动添加按钮 - 固定在右下角 */}
+        <button
+          onClick={addEquityClass}
+          className="fixed bottom-8 right-8 z-40 w-14 h-14 rounded-full bg-gradient-to-br from-apple-blue-500 to-apple-blue-600 text-white shadow-2xl hover:shadow-xl hover:scale-110 active:scale-95 transition-all duration-300 flex items-center justify-center group"
+          title={t('addClass', {}, lang)}
+        >
+          <Plus className="w-7 h-7 group-hover:rotate-90 transition-transform duration-300" />
+        </button>
       </main>
 
       {/* 页脚 */}
+
       <footer className="mt-16 py-8 border-t border-apple-gray-200 bg-white/50 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-6 text-center">
           <p className="text-sm text-apple-gray-500">{t('footer', {}, lang)}</p>

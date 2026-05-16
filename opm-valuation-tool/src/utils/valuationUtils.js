@@ -168,32 +168,22 @@ function getEffectiveSharesAtBreakpoint(equityClass, lowerBound) {
 
 /**
  * ============================================================
- * 构建断点矩阵（Breakpoint Matrix）- 修正版
+ * 构建断点矩阵（Breakpoint Matrix）- 多 ESOP 阶梯触发版
  * 
- * 核心修正：区分 Per-share Strike Price 和 Aggregate Enterprise Value Breakpoint
- * 
- * 在 OPM 模型中，断点（Breakpoint）代表的是企业总权益价值的某个阈值，
- * 而 ESOP 的行权价是每股价格（Per-share Strike Price）。
- * 因此需要将每股行权价转换为对应的企业总价值断点。
+ * 核心修正：处理多个 ESOP 批次（不同行权价）的阶梯触发效应
  * 
  * 关键公式：
- *   BP_ESOP = cumulativePref + (StrikePrice × ActiveCommonShares)
+ *   BP_ESOP_1 = cumulativePref + (Strike₁ × Shares_Common)
+ *   BP_ESOP_2 = cumulativePref + (Strike₂ × [Shares_Common + Shares_ESOP_1])
+ *   BP_ESOP_3 = cumulativePref + (Strike₃ × [Shares_Common + Shares_ESOP_1 + Shares_ESOP_2])
  * 
- * 其中：
- *   - cumulativePref: 所有优先股的清算优先权累积值
- *   - StrikePrice: ESOP 的每股行权价
- *   - ActiveCommonShares: 当前活跃的普通股股数
- *     （在 ESOP 解锁前 = Common Shares；解锁后 = Common + ESOP Shares）
+ * 为什么 BP_ESOP_2 必须包含 ESOP_1 的股数？
+ * 因为当 ESOP_1 已解锁后，它已经进入了"实值状态"（In-the-Money），
+ * 开始参与分配。此时 Common 股东不再独占剩余价值，而是与 ESOP_1 共享。
+ * 因此，ESOP_2 的行权价需要覆盖更大的股数基数才能触发。
  * 
- * 这是一个迭代过程：
- *   1. 先处理所有清算优先权，形成初始断点
- *   2. 然后按行权价从小到大处理 ESOP：
- *      - 计算当前活跃的普通股股数
- *      - 用公式 BP_ESOP = cumulativePref + (StrikePrice × ActiveCommonShares)
- *        计算该 ESOP 触发时的企业总价值
- *      - 将该 BP_ESOP 加入断点矩阵
- *      - 更新 ActiveCommonShares（该 ESOP 解锁后，普通股股数增加）
- *   3. 后续 ESOP 的触发点会因为普通股股数增加而改变
+ * 如果不包含 ESOP_1 的股数，会低估触发 ESOP_2 所需的 EV，
+ * 导致 ESOP_2 过早进入分配，造成合规性错误。
  * 
  * 示例：
  *   - Series A: 1M shares, $5M liquidation preference
@@ -201,10 +191,11 @@ function getEffectiveSharesAtBreakpoint(equityClass, lowerBound) {
  *   - ESOP 2: 0.3M shares, strike = $1.00/share
  *   - Common: 5M shares
  * 
- *   初始 cumulativePref = $5M, ActiveCommonShares = 5M (仅 Common)
- *   ESOP 1 trigger = $5M + ($0.50 × 5M) = $7.5M
- *   解锁后 ActiveCommonShares = 5.5M
- *   ESOP 2 trigger = $5M + ($1.00 × 5.5M) = $10.5M
+ *   初始 cumulativePref = $5M, activeShares = 5M (仅 Common)
+ *   BP_ESOP_1 = $5M + ($0.50 × 5M) = $7.5M
+ *   解锁后 activeShares = 5.5M (Common + ESOP 1)
+ *   BP_ESOP_2 = $5M + ($1.00 × 5.5M) = $10.5M
+ *   解锁后 activeShares = 5.8M (Common + ESOP 1 + ESOP 2)
  * ============================================================
  */
 export function buildBreakpointMatrix(equityClasses, totalEquityValue) {
@@ -218,9 +209,6 @@ export function buildBreakpointMatrix(equityClasses, totalEquityValue) {
   // ============================================================
   // 第一阶段：处理所有清算优先权 (Liquidation Preferences)
   // 这些是固定的断点，不受股权稀释影响
-  // 
-  // 只有 Preferred 类型有清算优先权。
-  // Common 和 ESOP 的清算优先权为 0。
   // ============================================================
   let cumulativePref = 0;
   sortedClasses.forEach(ec => {
@@ -236,16 +224,16 @@ export function buildBreakpointMatrix(equityClasses, totalEquityValue) {
   // 从而改变下一个 ESOP 的行权断点。
   // 
   // 关键公式：
-  //   BP_ESOP = cumulativePref + (StrikePrice × ActiveCommonShares)
+  //   BP_ESOP_N = cumulativePref + (Strike_N × activeShares)
   // 
-  // 其中 ActiveCommonShares 是动态累加的：
+  // 其中 activeShares 是动态累加的：
   //   - 初始 = 所有 Common 证券的股数之和（不含 ESOP）
   //   - 每解锁一个 ESOP，加上该 ESOP 的有效股数
   // 
-  // 为什么 ActiveCommonShares 只包含 Common 和已解锁的 ESOP？
-  // 因为 ESOP 的行权价决定了其何时进入"实值状态"。
-  // 在 ESOP 解锁前，只有 Common 股东享有剩余价值分配权。
-  // ESOP 解锁后，ESOP 持有者与 Common 股东按比例分配剩余价值。
+  // 为什么 activeShares 必须包含已解锁的 ESOP？
+  // 因为已解锁的 ESOP 已经进入"实值状态"，开始参与分配。
+  // 后续 ESOP 的行权价需要覆盖更大的股数基数才能触发。
+  // 如果不包含已解锁的 ESOP，会低估触发后续 ESOP 所需的 EV。
   // ============================================================
   
   // 收集所有 ESOP 并按行权价排序
@@ -254,9 +242,9 @@ export function buildBreakpointMatrix(equityClasses, totalEquityValue) {
     .sort((a, b) => (a.exercisePrice || 0) - (b.exercisePrice || 0));
   
   if (esopClasses.length > 0) {
-    // 计算初始 ActiveCommonShares = 所有 Common 证券的股数之和
+    // 计算初始 activeShares = 所有 Common 证券的股数之和
     // 注意：这里只包含 Common 类型，不包含 ESOP
-    let activeCommonShares = sortedClasses
+    let activeShares = sortedClasses
       .filter(ec => ec.type === 'common')
       .reduce((sum, ec) => sum + getEffectiveSharesAtBreakpoint(ec, 0), 0);
     
@@ -264,16 +252,16 @@ export function buildBreakpointMatrix(equityClasses, totalEquityValue) {
     esopClasses.forEach(esop => {
       const exercisePrice = esop.exercisePrice || 0;
       // 计算该 ESOP 触发时的企业总价值断点
-      // BP_ESOP = cumulativePref + (StrikePrice × ActiveCommonShares)
-      const triggerEV = cumulativePref + (exercisePrice * activeCommonShares);
+      // BP_ESOP_N = cumulativePref + (Strike_N × activeShares)
+      const triggerEV = cumulativePref + (exercisePrice * activeShares);
       
       if (triggerEV > 0 && triggerEV < totalEquityValue) {
         breakpointSet.add(triggerEV);
       }
       
-      // 更新 ActiveCommonShares：该 ESOP 解锁后，普通股股数增加
+      // 更新 activeShares：该 ESOP 解锁后，总股数增加
       const esopShares = getEffectiveSharesAtBreakpoint(esop, triggerEV);
-      activeCommonShares += esopShares;
+      activeShares += esopShares;
     });
   }
   
@@ -304,7 +292,7 @@ export function buildBreakpointMatrix(equityClasses, totalEquityValue) {
  * - Vᵢ = C(Kᵢ₋₁) - C(Kᵢ)
  * - 由于 C(K) 是 K 的单调递减函数，Vᵢ > 0 恒成立
  * 
- * 第四步：瀑布分配（Waterfall Allocation）
+ * 第四步：阶梯瀑布分配（Stepped Waterfall Allocation）
  * - 每个区间 [Kᵢ₋₁, Kᵢ] 的分配规则取决于该区间的位置：
  * 
  *   Tranche 1 [0, cumulativePref]:
@@ -312,15 +300,21 @@ export function buildBreakpointMatrix(equityClasses, totalEquityValue) {
  *     Common 和 ESOP 的有效股数 = 0
  *     （因为清算优先权要求 Preferred 先获得全额分配）
  * 
- *   Tranche 2 [cumulativePref, BP_ESOP]:
+ *   Tranche 2 [cumulativePref, BP_ESOP_1]:
  *     100% 价值分配给 Common Shares
- *     ESOP 的有效股数 = 0
- *     （因为 ESOP 尚未进入实值状态）
+ *     所有 ESOP 的有效股数 = 0
+ *     （因为所有 ESOP 均未进入实值状态）
  * 
- *   Tranche 3 [BP_ESOP, S]:
- *     价值按比例分配给 Common 和 ESOP
- *     ESOP 的有效股数 = 实际 ESOP 股数
- *     分母 = Common Shares + ESOP Shares
+ *   Tranche 3 [BP_ESOP_1, BP_ESOP_2]:
+ *     价值按比例分配给 Common + ESOP 1
+ *     ESOP 2 的有效股数 = 0
+ *     （因为 ESOP 2 尚未进入实值状态）
+ *     分母 = Common Shares + ESOP 1 Shares
+ * 
+ *   Tranche 4 [BP_ESOP_2, S]:
+ *     价值按比例分配给 Common + ESOP 1 + ESOP 2
+ *     所有 ESOP 均进入实值状态
+ *     分母 = Common Shares + ESOP 1 Shares + ESOP 2 Shares
  * 
  * 第五步：汇总各层级总价值
  * - 将每个层级在所有区间中分配到的价值加总
@@ -354,7 +348,7 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
   
   // ============================================================
   // 第三步 & 第四步：构建断点分配表
-  // 计算每个区间的增量价值，并按瀑布规则分配
+  // 计算每个区间的增量价值，并按阶梯瀑布规则分配
   // ============================================================
   const breakpointTable = [];
   for (let i = 0; i < uniqueBreakpoints.length - 1; i++) {
@@ -373,27 +367,25 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
     const trancheValue = Math.max(0, lowerOption.value - upperOption.value);
     
     // ============================================================
-    // 瀑布分配规则（Waterfall Allocation Rules）
+    // 阶梯瀑布分配规则（Stepped Waterfall Allocation Rules）
     // 
-    // 根据断点位置确定分配规则：
+    // 根据断点位置确定该区间内"活跃"（Active）的证券类型：
     // 
     // 1. 如果 upper <= cumulativePref:
     //    该区间完全属于清算优先权范围。
-    //    只有 Preferred 参与分配，Common 和 ESOP 获得 0。
-    //    因为清算优先权要求 Preferred 先获得全额分配。
+    //    只有 Preferred 是活跃的，Common 和 ESOP 获得 0。
     // 
-    // 2. 如果 lower >= cumulativePref 且 upper <= BP_ESOP:
+    // 2. 如果 lower >= cumulativePref 且 upper <= 第一个 ESOP 的 BP:
     //    该区间属于 Common 独占范围。
-    //    ESOP 尚未进入实值状态，有效股数 = 0。
-    //    100% 价值分配给 Common。
+    //    所有 ESOP 均未进入实值状态，有效股数 = 0。
     // 
-    // 3. 如果 lower >= BP_ESOP:
-    //    该区间属于 Common 和 ESOP 共享范围。
-    //    ESOP 已进入实值状态，按比例分配。
+    // 3. 如果 lower >= 第 N 个 ESOP 的 BP 且 upper <= 第 N+1 个 ESOP 的 BP:
+    //    该区间属于 Common + 前 N 个 ESOP 共享范围。
+    //    第 N+1 个及之后的 ESOP 有效股数 = 0。
     // 
-    // 4. 跨区间情况（如 lower < cumulativePref < upper）:
-    //    该区间跨越多个分配区域。
-    //    所有清算优先权 <= upper 的证券参与分配。
+    // 4. 如果 lower >= 最后一个 ESOP 的 BP:
+    //    该区间属于 Common + 所有 ESOP 共享范围。
+    //    所有 ESOP 均进入实值状态。
     // ============================================================
     
     // 确定该区间内享有分配权的层级
@@ -406,27 +398,28 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
     // ============================================================
     // 计算该区间内各层级的有效股数
     // 
-    // 瀑布规则：
+    // 阶梯触发规则：
     // - 在清算优先权范围内（upper <= cumulativePref）：
     //   Common 和 ESOP 的有效股数 = 0
-    // - 在 Common 独占范围内（lower >= cumulativePref 且 upper <= BP_ESOP）：
-    //   ESOP 的有效股数 = 0
-    // - 在共享范围内（lower >= BP_ESOP）：
-    //   ESOP 按实际股数参与
+    // - 在 Common 独占范围内（lower >= cumulativePref 且 upper <= 第一个 ESOP BP）：
+    //   所有 ESOP 的有效股数 = 0
+    // - 在阶梯触发范围内（lower >= 第 N 个 ESOP BP）：
+    //   前 N 个 ESOP 按实际股数参与，第 N+1 个及之后的 ESOP 有效股数 = 0
     // ============================================================
     const allocations = eligibleClasses.map(ec => {
       let ecShares = 0;
       
-      if (ec.type === 'common' || ec.type === 'esop') {
+      if (ec.type === 'common') {
+        // Common：在清算优先权范围内获得 0，否则按实际股数
+        ecShares = upper <= cumulativePref ? 0 : getEffectiveSharesAtBreakpoint(ec, lower);
+      } else if (ec.type === 'esop') {
+        // ESOP：阶梯触发判断
+        // 在清算优先权范围内：获得 0
         if (upper <= cumulativePref) {
-          // 清算优先权范围内：Common 和 ESOP 获得 0
           ecShares = 0;
-        } else if (ec.type === 'esop') {
-          // ESOP：只有在其行权价对应的断点 <= lower 时才计入
-          // 即该 ESOP 在此价值区间已处于实值状态
-          ecShares = getEffectiveSharesAtBreakpoint(ec, lower);
         } else {
-          // Common：始终计入（但不在清算优先权范围内）
+          // 使用 getEffectiveSharesAtBreakpoint 判断该 ESOP 是否已解锁
+          // 该函数会检查 exercisePrice ≤ lowerBound
           ecShares = getEffectiveSharesAtBreakpoint(ec, lower);
         }
       } else {

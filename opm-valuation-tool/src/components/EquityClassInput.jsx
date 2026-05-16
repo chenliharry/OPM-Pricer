@@ -1,416 +1,320 @@
 /**
- * 资本结构层级输入组件
+ * EquityClassInput - 资本结构层级输入组件
  * 
- * 支持多种股权类型：
- * - Common Stock（普通股）
- * - Preferred Stock（优先股）
- * - ESOP / Stock Options（员工期权计划）
- * - SAFE (Simple Agreement for Future Equity)
- * - Convertible Notes（可转换债券）
- * - Warrants（认股权证）
+ * Apple 风格设计：
+ * - 柔和圆角 (rounded-2xl)
+ * - 毛玻璃效果 (backdrop-blur)
+ * - 大留白和清晰的信息层级
+ * - 流畅的动画过渡
  * 
- * 特性：
- * - 多语言支持
- * - 智能层级命名
- * - 响应式布局
+ * 功能特性：
+ * - 支持多种股权类型（Common, Preferred, ESOP, SAFE, Convertible, Warrant）
+ * - 每种类型显示不同的参数配置
+ * - 智能层级命名（自动根据参数生成描述性名称）
+ * - 实时更新父组件状态
  */
 
-import { Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import { useState } from 'react';
-import { t, getTypeLabel } from '../utils/i18n';
+import { ChevronDown, ChevronUp, Trash2, Info } from 'lucide-react';
+import { getTypeLabel, t } from '../utils/i18n';
 
-const EQUITY_TYPES = [
-  { value: 'common', color: 'bg-blue-100 text-blue-800' },
-  { value: 'preferred', color: 'bg-purple-100 text-purple-800' },
-  { value: 'esop', color: 'bg-green-100 text-green-800' },
-  { value: 'safe', color: 'bg-orange-100 text-orange-800' },
-  { value: 'convertible', color: 'bg-red-100 text-red-800' },
-  { value: 'warrant', color: 'bg-yellow-100 text-yellow-800' },
-];
+/**
+ * 股权类型配置映射表
+ * 定义每种类型需要显示的字段和默认值
+ */
+const typeConfig = {
+  common: {
+    fields: ['shares', 'pricePerShare'],
+    seniority: 0,
+    defaultValues: { shares: 0, pricePerShare: 1.0, liquidationPreference: 0, participation: false, conversionRatio: 1.0 }
+  },
+  preferred: {
+    fields: ['shares', 'pricePerShare', 'liquidationPreference', 'conversionRatio', 'participation'],
+    seniority: 3,
+    defaultValues: { shares: 0, pricePerShare: 1.0, liquidationPreference: 1.0, participation: false, conversionRatio: 1.0 }
+  },
+  esop: {
+    fields: ['shares', 'exercisePrice', 'vestedPercentage', 'probabilityOfVesting'],
+    seniority: 0,
+    defaultValues: { shares: 0, exercisePrice: 0.5, vestedPercentage: 0.4, probabilityOfVesting: 0.6 }
+  },
+  safe: {
+    fields: ['investmentAmount', 'valuationCap', 'discountRate'],
+    seniority: 1,
+    defaultValues: { shares: 0, investmentAmount: 500000, valuationCap: 5000000, discountRate: 0.2 }
+  },
+  convertible: {
+    fields: ['principal', 'interestRate', 'conversionPrice', 'shares'],
+    seniority: 2,
+    defaultValues: { shares: 0, principal: 1000000, interestRate: 0.08, conversionPrice: 2.0 }
+  },
+  warrant: {
+    fields: ['shares', 'exercisePrice'],
+    seniority: 0,
+    defaultValues: { shares: 0, exercisePrice: 1.0 }
+  }
+};
+
+/**
+ * 字段配置映射表
+ * 定义每个字段的标签、类型、步长、最小值和提示信息
+ */
+const fieldConfig = {
+  shares: {
+    labelKey: 'shares',
+    type: 'number',
+    step: 1,
+    min: 0,
+    tipKey: null
+  },
+  pricePerShare: {
+    labelKey: 'pricePerShare',
+    type: 'number',
+    step: 0.01,
+    min: 0,
+    tipKey: null
+  },
+  liquidationPreference: {
+    labelKey: 'liqPref',
+    type: 'number',
+    step: 0.1,
+    min: 0,
+    tipKey: null
+  },
+  conversionRatio: {
+    labelKey: 'conversionRatio',
+    type: 'number',
+    step: 0.1,
+    min: 0,
+    tipKey: null
+  },
+  participation: {
+    labelKey: 'participation',
+    type: 'checkbox',
+    step: null,
+    min: null,
+    tipKey: null
+  },
+  exercisePrice: {
+    labelKey: 'exercisePrice',
+    type: 'number',
+    step: 0.01,
+    min: 0,
+    tipKey: null
+  },
+  vestedPercentage: {
+    labelKey: 'vestedPct',
+    type: 'number',
+    step: 0.01,
+    min: 0,
+    max: 1,
+    tipKey: null
+  },
+  probabilityOfVesting: {
+    labelKey: 'vestingProb',
+    type: 'number',
+    step: 0.01,
+    min: 0,
+    max: 1,
+    tipKey: null
+  },
+  investmentAmount: {
+    labelKey: 'investmentAmount',
+    type: 'number',
+    step: 1000,
+    min: 0,
+    tipKey: null
+  },
+  valuationCap: {
+    labelKey: 'valuationCap',
+    type: 'number',
+    step: 100000,
+    min: 0,
+    tipKey: null
+  },
+  discountRate: {
+    labelKey: 'discountRate',
+    type: 'number',
+    step: 0.01,
+    min: 0,
+    max: 1,
+    tipKey: null
+  },
+  principal: {
+    labelKey: 'principal',
+    type: 'number',
+    step: 1000,
+    min: 0,
+    tipKey: null
+  },
+  interestRate: {
+    labelKey: 'interestRate',
+    type: 'number',
+    step: 0.01,
+    min: 0,
+    max: 1,
+    tipKey: null
+  },
+  conversionPrice: {
+    labelKey: 'conversionPrice',
+    type: 'number',
+    step: 0.01,
+    min: 0,
+    tipKey: null
+  }
+};
 
 function EquityClassInput({ equityClass, onUpdate, onRemove, canRemove, lang }) {
   const [expanded, setExpanded] = useState(true);
+  // 跟踪每个字段是否被用户聚焦过（用于清除默认 0）
+  const [focusedFields, setFocusedFields] = useState({});
 
   const handleChange = (field, value) => {
     onUpdate(equityClass.id, { [field]: value });
   };
 
-  const getTypeColor = () => {
-    const type = EQUITY_TYPES.find(t => t.value === equityClass.type);
-    return type ? type.color : 'bg-apple-gray-100 text-apple-gray-800';
+  // 当用户聚焦输入框时，如果当前值为 0 则清空
+  const handleFocus = (field) => {
+    if (!focusedFields[field]) {
+      setFocusedFields(prev => ({ ...prev, [field]: true }));
+      if (equityClass[field] === 0 || equityClass[field] === '0') {
+        handleChange(field, '');
+      }
+    }
   };
 
+  // 当用户离开输入框时，如果为空则恢复为 0
+  const handleBlur = (field) => {
+    if (equityClass[field] === '' || equityClass[field] === undefined || equityClass[field] === null) {
+      handleChange(field, 0);
+    }
+  };
+
+  const config = typeConfig[equityClass.type] || typeConfig.common;
+  const typeTipKey = `tip${equityClass.type.charAt(0).toUpperCase() + equityClass.type.slice(1)}`;
+
   return (
-    <div className="bg-apple-gray-50 rounded-xl p-5 border border-apple-gray-200 hover:border-apple-blue-500 transition-all duration-200">
-      {/* 标题栏 */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center space-x-3">
+    <div 
+      id={`equity-card-${equityClass.id}`}
+      className="bg-white rounded-2xl border border-apple-gray-200 overflow-hidden transition-all duration-300 hover:shadow-md"
+    >
+      {/* 卡片头部 - 显示层级名称和类型 */}
+      <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-apple-gray-50 to-white">
+        <div className="flex items-center space-x-4 flex-1">
+          {/* 展开/折叠按钮 */}
           <button
             onClick={() => setExpanded(!expanded)}
-            className="p-1 hover:bg-apple-gray-200 rounded-lg transition-colors"
+            className="p-1 rounded-lg hover:bg-apple-gray-100 transition-colors"
           >
-            {expanded ? <ChevronUp className="w-5 h-5 text-apple-gray-600" /> : <ChevronDown className="w-5 h-5 text-apple-gray-600" />}
+            {expanded ? <ChevronUp className="w-4 h-4 text-apple-gray-500" /> : <ChevronDown className="w-4 h-4 text-apple-gray-500" />}
           </button>
+          
+          {/* 层级名称 */}
           <input
             type="text"
             value={equityClass.name}
             onChange={(e) => handleChange('name', e.target.value)}
-            className="text-lg font-semibold bg-transparent border-b-2 border-transparent hover:border-apple-blue-500 focus:border-apple-blue-500 focus:outline-none text-apple-gray-900 px-2 py-1 transition-colors"
-            placeholder={lang === 'en' ? 'Class Name' : '层级名称'}
+            className="text-lg font-semibold text-apple-gray-900 bg-transparent border-none focus:outline-none focus:ring-0 p-0"
           />
-          {/* 股权类型标签 */}
-          <span className={`px-3 py-1 rounded-full text-xs font-medium ${getTypeColor()}`}>
+          
+          {/* 类型标签 */}
+          <span className="px-3 py-1 text-xs font-medium rounded-full bg-apple-blue-50 text-apple-blue-600 border border-apple-blue-100">
             {getTypeLabel(equityClass.type, lang)}
           </span>
         </div>
         
-        {canRemove && (
-          <button
-            onClick={() => onRemove(equityClass.id)}
-            className="p-2 hover:bg-red-100 rounded-lg transition-colors group"
-          >
-            <Trash2 className="w-5 h-5 text-apple-gray-400 group-hover:text-red-500" />
-          </button>
-        )}
-      </div>
+        {/* 操作按钮 */}
+        <div className="flex items-center space-x-2">
+          {/* 类型选择器 */}
+          <select
+            value={equityClass.type}
+            onChange={(e) => {
+              const newType = e.target.value;
+              const newConfig = typeConfig[newType] || typeConfig.common;
+              // 切换类型时，一次性提交所有更新，避免 React 批量更新问题
+              const allUpdates = {
+                type: newType,
+                seniority: newConfig.seniority,
+                ...newConfig.defaultValues
+              };
+              onUpdate(equityClass.id, allUpdates);
+            }}
 
-      {/* 股权类型选择器 */}
-      <div className="mb-4">
-        <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-          {t('equityType', {}, lang)}
-        </label>
-        <div className="flex flex-wrap gap-2">
-          {EQUITY_TYPES.map(type => (
+            className="px-3 py-1.5 text-sm rounded-xl bg-apple-gray-100 border border-apple-gray-200 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
+          >
+            <option value="common">{t('typeCommon', {}, lang)}</option>
+            <option value="preferred">{t('typePreferred', {}, lang)}</option>
+            <option value="esop">{t('typeEsop', {}, lang)}</option>
+            <option value="safe">{t('typeSafe', {}, lang)}</option>
+            <option value="convertible">{t('typeConvertible', {}, lang)}</option>
+            <option value="warrant">{t('typeWarrant', {}, lang)}</option>
+          </select>
+          
+          {/* 删除按钮 */}
+          {canRemove && (
             <button
-              key={type.value}
-              onClick={() => handleChange('type', type.value)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 ${
-                equityClass.type === type.value
-                  ? 'bg-apple-blue-500 text-white shadow-md'
-                  : 'bg-white text-apple-gray-600 border border-apple-gray-300 hover:border-apple-blue-500'
-              }`}
+              onClick={() => onRemove(equityClass.id)}
+              className="p-2 rounded-xl hover:bg-red-50 text-apple-gray-400 hover:text-red-500 transition-all"
+              title="Remove"
             >
-              {getTypeLabel(type.value, lang)}
+              <Trash2 className="w-4 h-4" />
             </button>
-          ))}
+          )}
         </div>
       </div>
-
-      {/* 详细参数 */}
+      
+      {/* 展开的内容区域 */}
       {expanded && (
-        <div className="space-y-4">
-          {/* 通用参数 */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div>
-              <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                {t('shares', {}, lang)}
-              </label>
-              <input
-                type="number"
-                value={equityClass.shares}
-                onChange={(e) => handleChange('shares', parseFloat(e.target.value) || 0)}
-                className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                placeholder="0"
-              />
+        <div className="px-6 py-4 space-y-4">
+          {/* 类型提示 */}
+          {t(typeTipKey, {}, lang) && t(typeTipKey, {}, lang) !== typeTipKey && (
+            <div className="flex items-start space-x-2 p-3 rounded-xl bg-apple-blue-50/50 border border-apple-blue-100">
+              <Info className="w-4 h-4 text-apple-blue-500 mt-0.5 flex-shrink-0" />
+              <p className="text-sm text-apple-blue-700">{t(typeTipKey, {}, lang)}</p>
             </div>
-
-            {/* 根据类型显示不同参数 */}
-            {(equityClass.type === 'common' || equityClass.type === 'preferred') && (
-              <>
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('pricePerShare', {}, lang)}
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={equityClass.pricePerShare}
-                    onChange={(e) => handleChange('pricePerShare', parseFloat(e.target.value) || 0)}
-                    className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                    placeholder="0.00"
-                  />
-                </div>
-
-                {equityClass.type === 'preferred' && (
-                  <>
-                    <div>
-                      <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                        {t('liqPref', {}, lang)}
-                      </label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={equityClass.liquidationPreference}
-                        onChange={(e) => handleChange('liquidationPreference', parseFloat(e.target.value) || 0)}
-                        className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                        placeholder="1.0"
-                      />
-                      <p className="text-xs text-apple-gray-500 mt-1">
-                        {lang === 'en' ? 'Typically 1.0x for Preferred' : '优先股通常为 1.0'}
-                      </p>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                        {t('conversionRatio', {}, lang)}
-                      </label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={equityClass.conversionRatio}
-                        onChange={(e) => handleChange('conversionRatio', parseFloat(e.target.value) || 1)}
-                        className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                        placeholder="1.0"
-                      />
-                    </div>
-
-                    <div className="flex items-center space-x-3 pt-6">
-                      <input
-                        type="checkbox"
-                        id={`participation-${equityClass.id}`}
-                        checked={equityClass.participation}
-                        onChange={(e) => handleChange('participation', e.target.checked)}
-                        className="w-5 h-5 rounded border-apple-gray-300 text-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20"
-                      />
-                      <label htmlFor={`participation-${equityClass.id}`} className="text-sm font-medium text-apple-gray-700 cursor-pointer">
-                        {t('participation', {}, lang)}
-                      </label>
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-
-            {/* ESOP 参数 */}
-            {equityClass.type === 'esop' && (
-              <>
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('exercisePrice', {}, lang)}
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={equityClass.exercisePrice}
-                    onChange={(e) => handleChange('exercisePrice', parseFloat(e.target.value) || 0)}
-                    className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                    placeholder="0.00"
-                  />
-                  <p className="text-xs text-apple-gray-500 mt-1">
-                    {lang === 'en' ? 'Price employees pay to exercise' : '员工行权时需要支付的价格'}
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('vestedPct', {}, lang)}
-                  </label>
-                  <div className="relative">
+          )}
+          
+          {/* 参数字段网格 */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {config.fields.map(field => {
+              const fieldConf = fieldConfig[field];
+              if (!fieldConf) return null;
+              
+              if (fieldConf.type === 'checkbox') {
+                return (
+                  <div key={field} className="flex items-center space-x-3 p-3 rounded-xl bg-apple-gray-50">
                     <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      max="1"
-                      value={equityClass.vestedPercentage}
-                      onChange={(e) => handleChange('vestedPercentage', parseFloat(e.target.value) || 0)}
-                      className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                      placeholder="0.50"
+                      type="checkbox"
+                      checked={equityClass[field] || false}
+                      onChange={(e) => handleChange(field, e.target.checked)}
+                      className="w-5 h-5 rounded-lg border-apple-gray-300 text-apple-blue-500 focus:ring-apple-blue-500 transition-all"
                     />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-apple-gray-500">
-                      {((equityClass.vestedPercentage || 0) * 100).toFixed(0)}%
-                    </span>
+                    <label className="text-sm font-medium text-apple-gray-700">
+                      {t(fieldConf.labelKey, {}, lang)}
+                    </label>
                   </div>
-                  <p className="text-xs text-apple-gray-500 mt-1">
-                    {lang === 'en' ? 'Percentage of options that have vested' : '已满足行权条件的期权比例'}
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('vestingProb', {}, lang)}
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      max="1"
-                      value={equityClass.probabilityOfVesting}
-                      onChange={(e) => handleChange('probabilityOfVesting', parseFloat(e.target.value) || 0)}
-                      className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                      placeholder="0.50"
-                    />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-apple-gray-500">
-                      {((equityClass.probabilityOfVesting || 0) * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                  <p className="text-xs text-apple-gray-500 mt-1">
-                    {lang === 'en' ? 'Estimated probability of unvested options vesting' : '未行权期权最终行权的概率估计'}
-                  </p>
-                </div>
-              </>
-            )}
-
-            {/* SAFE 参数 */}
-            {equityClass.type === 'safe' && (
-              <>
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('investmentAmount', {}, lang)}
+                );
+              }
+              
+              return (
+                <div key={field} className="space-y-1.5">
+                  <label className="block text-sm font-medium text-apple-gray-600">
+                    {t(fieldConf.labelKey, {}, lang)}
                   </label>
                   <input
                     type="number"
-                    value={equityClass.investmentAmount}
-                    onChange={(e) => handleChange('investmentAmount', parseFloat(e.target.value) || 0)}
+                    value={equityClass[field] ?? 0}
+                    onChange={(e) => handleChange(field, parseFloat(e.target.value) || 0)}
+                    onFocus={() => handleFocus(field)}
+                    onBlur={() => handleBlur(field)}
+                    step={fieldConf.step}
+                    min={fieldConf.min}
                     className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                    placeholder="1000000"
+                    placeholder="0"
                   />
                 </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('valuationCap', {}, lang)}
-                  </label>
-                  <input
-                    type="number"
-                    value={equityClass.valuationCap}
-                    onChange={(e) => handleChange('valuationCap', parseFloat(e.target.value) || 0)}
-                    className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                    placeholder="5000000"
-                  />
-                  <p className="text-xs text-apple-gray-500 mt-1">
-                    {lang === 'en' ? 'SAFE valuation cap (optional)' : 'SAFE 的估值上限（可选）'}
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('discountRate', {}, lang)}
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      max="1"
-                      value={equityClass.discountRate}
-                      onChange={(e) => handleChange('discountRate', parseFloat(e.target.value) || 0)}
-                      className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                      placeholder="0.20"
-                    />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-apple-gray-500">
-                      {((equityClass.discountRate || 0) * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                  <p className="text-xs text-apple-gray-500 mt-1">
-                    {lang === 'en' ? 'SAFE discount rate (optional, e.g. 20%)' : 'SAFE 的折扣率（可选，如 20%）'}
-                  </p>
-                </div>
-              </>
-            )}
-
-            {/* 可转换债券参数 */}
-            {equityClass.type === 'convertible' && (
-              <>
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('principal', {}, lang)}
-                  </label>
-                  <input
-                    type="number"
-                    value={equityClass.principal}
-                    onChange={(e) => handleChange('principal', parseFloat(e.target.value) || 0)}
-                    className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                    placeholder="1000000"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('interestRate', {}, lang)}
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={(equityClass.interestRate || 0) * 100}
-                      onChange={(e) => handleChange('interestRate', (parseFloat(e.target.value) || 0) / 100)}
-                      className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                      placeholder="5"
-                    />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-apple-gray-500">%</span>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('conversionPrice', {}, lang)}
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={equityClass.conversionPrice}
-                    onChange={(e) => handleChange('conversionPrice', parseFloat(e.target.value) || 0)}
-                    className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                    placeholder="1.00"
-                  />
-                  <p className="text-xs text-apple-gray-500 mt-1">
-                    {lang === 'en' ? 'Price at which debt converts to equity' : '债券转换为股权的价格'}
-                  </p>
-                </div>
-              </>
-            )}
-
-            {/* 认股权证参数 */}
-            {equityClass.type === 'warrant' && (
-              <>
-                <div>
-                  <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                    {t('exercisePrice', {}, lang)}
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={equityClass.exercisePrice}
-                    onChange={(e) => handleChange('exercisePrice', parseFloat(e.target.value) || 0)}
-                    className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                    placeholder="1.00"
-                  />
-                  <p className="text-xs text-apple-gray-500 mt-1">
-                    {lang === 'en' ? 'Warrant exercise price' : '认股权证的行权价格'}
-                  </p>
-                </div>
-              </>
-            )}
-
-            {/* 优先级 */}
-            <div>
-              <label className="block text-xs font-medium text-apple-gray-600 mb-2">
-                {t('seniority', {}, lang)}
-              </label>
-              <input
-                type="number"
-                value={equityClass.seniority}
-                onChange={(e) => handleChange('seniority', parseInt(e.target.value) || 0)}
-                className="w-full px-4 py-2.5 bg-white rounded-lg border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
-                placeholder="0"
-              />
-              <p className="text-xs text-apple-gray-500 mt-1">
-                {lang === 'en' ? 'Higher number = higher priority' : '数字越大优先级越高'}
-              </p>
-            </div>
-          </div>
-
-          {/* 类型说明 */}
-          <div className="p-3 bg-white rounded-lg border border-apple-gray-200">
-            <p className="text-xs text-apple-gray-600">
-              {equityClass.type === 'common' && t('tipCommon', {}, lang)}
-              {equityClass.type === 'preferred' && t('tipPreferred', {}, lang)}
-              {equityClass.type === 'esop' && t('tipEsop', {}, lang)}
-              {equityClass.type === 'safe' && t('tipSafe', {}, lang)}
-              {equityClass.type === 'convertible' && t('tipConvertible', {}, lang)}
-              {equityClass.type === 'warrant' && t('tipWarrant', {}, lang)}
-            </p>
+              );
+            })}
           </div>
         </div>
       )}
