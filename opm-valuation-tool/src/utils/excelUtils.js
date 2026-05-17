@@ -55,10 +55,8 @@ export function exportToExcel(results, parameters, equityClasses, breakpointTabl
     lang === 'en' ? 'Vesting Prob.' : '行权概率 (Vesting Probability)',
     lang === 'en' ? 'Investment Amt' : '投资金额 (Investment Amount)',
     lang === 'en' ? 'Valuation Cap' : '估值上限 (Valuation Cap)',
-    lang === 'en' ? 'Discount Rate' : '折扣率 (Discount Rate)',
-    lang === 'en' ? 'Principal' : '本金 (Principal)',
-    lang === 'en' ? 'Interest Rate' : '利率 (Interest Rate)',
-    lang === 'en' ? 'Conversion Price' : '转换价格 (Conversion Price)'
+    lang === 'en' ? 'Discount Rate' : '折扣率 (Discount Rate)'
+
   ];
 
   // 将 equityClasses 转换为模板格式的行数据
@@ -76,11 +74,9 @@ export function exportToExcel(results, parameters, equityClasses, breakpointTabl
     ec.probabilityOfVesting || '',
     ec.investmentAmount || '',
     ec.valuationCap || '',
-    ec.discountRate || '',
-    ec.principal || '',
-    ec.interestRate || '',
-    ec.conversionPrice || ''
+    ec.discountRate || ''
   ]);
+
 
   const capStructureData = [header, ...classRows];
   const capStructureSheet = XLSX.utils.aoa_to_sheet(capStructureData);
@@ -294,11 +290,8 @@ export async function importFromExcel(file) {
               // SAFE 参数
               investmentAmount: parseFloat(row[11]) || 0,
               valuationCap: parseFloat(row[12]) || 0,
-              discountRate: parseFloat(row[13]) || 0,
-              // 可转换债券参数
-              principal: parseFloat(row[14]) || 0,
-              interestRate: parseFloat(row[15]) || 0,
-              conversionPrice: parseFloat(row[16]) || 0
+              discountRate: parseFloat(row[13]) || 0
+
             };
             
             equityClasses.push(equityClass);
@@ -372,16 +365,15 @@ export function downloadTemplate(lang = 'zh') {
     lang === 'en' ? 'Vesting Prob.' : '行权概率 (Vesting Probability)',
     lang === 'en' ? 'Investment Amt' : '投资金额 (Investment Amount)',
     lang === 'en' ? 'Valuation Cap' : '估值上限 (Valuation Cap)',
-    lang === 'en' ? 'Discount Rate' : '折扣率 (Discount Rate)',
-    lang === 'en' ? 'Principal' : '本金 (Principal)',
-    lang === 'en' ? 'Interest Rate' : '利率 (Interest Rate)',
-    lang === 'en' ? 'Conversion Price' : '转换价格 (Conversion Price)'
+    lang === 'en' ? 'Discount Rate' : '折扣率 (Discount Rate)'
+
   ];
 
   // 字段说明行（在表头下方显示为注释）
   const fieldDescriptions = [
     lang === 'en' ? 'Security name (e.g., Series A)' : '证券名称（如 Series A）',
-    lang === 'en' ? 'Type: common/preferred/esop/safe/convertible/warrant' : '类型: common/preferred/esop/safe/convertible/warrant',
+    lang === 'en' ? 'Type: common/preferred/esop/safe/warrant' : '类型: common/preferred/esop/safe/warrant',
+
     lang === 'en' ? 'Number of shares (integer)' : '持股数量（整数）',
     lang === 'en' ? 'Price per share (for preferred)' : '每股价格（优先股使用）',
     lang === 'en' ? 'Liquidation preference multiple (e.g., 1 = 1x). Common: fill 0' : '清算优先权倍数（如 1 代表 1x）。普通股填 0',
@@ -393,18 +385,17 @@ export function downloadTemplate(lang = 'zh') {
     lang === 'en' ? 'Vesting probability (0-1). ESOP only' : '行权概率（0-1）。仅 ESOP 使用',
     lang === 'en' ? 'Investment amount. SAFE only' : '投资金额。仅 SAFE 使用',
     lang === 'en' ? 'Valuation cap. SAFE only' : '估值上限。仅 SAFE 使用',
-    lang === 'en' ? 'Discount rate (0-1). SAFE only' : '折扣率（0-1）。仅 SAFE 使用',
-    lang === 'en' ? 'Principal amount. Convertible only' : '本金金额。仅 Convertible 使用',
-    lang === 'en' ? 'Interest rate (0-1). Convertible only' : '利率（0-1）。仅 Convertible 使用',
-    lang === 'en' ? 'Conversion price. Convertible only' : '转换价格。仅 Convertible 使用'
+    lang === 'en' ? 'Discount rate (0-1). SAFE only' : '折扣率（0-1）。仅 SAFE 使用'
+
   ];
 
   const exampleData = [
-    ['Series A Preferred', 'preferred', 1000000, 1.00, 1.0, 'No', 1.0, 3, '', '', '', '', '', '', '', '', ''],
-    ['ESOP Pool', 'esop', 500000, '', '', '', '', 2, 0.50, 0.40, 0.60, '', '', '', '', '', ''],
-    ['SAFE Investors', 'safe', 0, '', '', '', '', 1, '', '', '', 500000, 5000000, 0.20, '', '', ''],
-    ['Common Stock', 'common', 5000000, 0.10, 0, 'No', 1.0, 0, '', '', '', '', '', '', '', '', '']
+    ['Series A Preferred', 'preferred', 1000000, 1.00, 1.0, 'No', 1.0, 3, '', '', '', '', '', ''],
+    ['ESOP Pool', 'esop', 500000, '', '', '', '', 2, 0.50, 0.40, 0.60, '', '', ''],
+    ['SAFE Investors', 'safe', 500000, 1.00, 1.0, 'No', 1.0, 3, '', '', '', '', '', ''],
+    ['Common Stock', 'common', 5000000, 0.10, 0, 'No', 1.0, 0, '', '', '', '', '', '']
   ];
+
 
   const templateData = [header, fieldDescriptions, ...exampleData];
   const templateSheet = XLSX.utils.aoa_to_sheet(templateData);

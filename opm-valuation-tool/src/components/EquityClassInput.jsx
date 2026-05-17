@@ -39,15 +39,11 @@ const typeConfig = {
     defaultValues: { shares: 0, exercisePrice: 0.5, vestedPercentage: 0.4, probabilityOfVesting: 0.6 }
   },
   safe: {
-    fields: ['investmentAmount', 'valuationCap', 'discountRate'],
-    seniority: 1,
-    defaultValues: { shares: 0, investmentAmount: 500000, valuationCap: 5000000, discountRate: 0.2 }
+    fields: ['shares', 'pricePerShare', 'liquidationPreference', 'conversionRatio', 'participation'],
+    seniority: 3,
+    defaultValues: { shares: 0, pricePerShare: 1.0, liquidationPreference: 1.0, participation: false, conversionRatio: 1.0 }
   },
-  convertible: {
-    fields: ['principal', 'interestRate', 'conversionPrice', 'shares'],
-    seniority: 2,
-    defaultValues: { shares: 0, principal: 1000000, interestRate: 0.08, conversionPrice: 2.0 }
-  },
+
   warrant: {
     fields: ['shares', 'exercisePrice'],
     seniority: 0,
@@ -282,8 +278,8 @@ function EquityClassInput({ equityClass, onUpdate, onRemove, canRemove, lang }) 
             <option value="preferred">{t('typePreferred', {}, lang)}</option>
             <option value="esop">{t('typeEsop', {}, lang)}</option>
             <option value="safe">{t('typeSafe', {}, lang)}</option>
-            <option value="convertible">{t('typeConvertible', {}, lang)}</option>
             <option value="warrant">{t('typeWarrant', {}, lang)}</option>
+
           </select>
           
           {/* 删除按钮 */}
