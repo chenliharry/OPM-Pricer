@@ -8,7 +8,7 @@
  * - 流畅的动画过渡
  * 
  * 功能特性：
- * - 支持多种股权类型（Common, Preferred, ESOP, SAFE, Convertible, Warrant）
+ * - 支持多种股权类型（Common, Preferred, ESOP, Warrant）
  * - 每种类型显示不同的参数配置
  * - 智能层级命名（自动根据参数生成描述性名称）
  * - 实时更新父组件状态
@@ -29,21 +29,16 @@ const typeConfig = {
     defaultValues: { shares: 0, pricePerShare: 1.0, liquidationPreference: 0, participation: false, conversionRatio: 1.0 }
   },
   preferred: {
-    fields: ['shares', 'pricePerShare', 'liquidationPreference', 'conversionRatio', 'participation'],
+    fields: ['shares', 'pricePerShare', 'liquidationPreference', 'conversionRatio', 'participation', 'participationCap'],
     seniority: 3,
-    defaultValues: { shares: 0, pricePerShare: 1.0, liquidationPreference: 1.0, participation: false, conversionRatio: 1.0 }
+    defaultValues: { shares: 0, pricePerShare: 1.0, liquidationPreference: 1.0, participation: false, conversionRatio: 1.0, participationCap: 1.0 }
   },
+
   esop: {
     fields: ['shares', 'exercisePrice', 'vestedPercentage', 'probabilityOfVesting'],
     seniority: 0,
     defaultValues: { shares: 0, exercisePrice: 0.5, vestedPercentage: 0.4, probabilityOfVesting: 0.6 }
   },
-  safe: {
-    fields: ['shares', 'pricePerShare', 'liquidationPreference', 'conversionRatio', 'participation'],
-    seniority: 3,
-    defaultValues: { shares: 0, pricePerShare: 1.0, liquidationPreference: 1.0, participation: false, conversionRatio: 1.0 }
-  },
-
   warrant: {
     fields: ['shares', 'exercisePrice'],
     seniority: 0,
@@ -91,6 +86,14 @@ const fieldConfig = {
     min: null,
     tipKey: null
   },
+  participationCap: {
+    labelKey: 'participationCap',
+    type: 'number',
+    step: 0.1,
+    min: 0,
+    tipKey: null
+  },
+
   exercisePrice: {
     labelKey: 'exercisePrice',
     type: 'number',
@@ -277,7 +280,6 @@ function EquityClassInput({ equityClass, onUpdate, onRemove, canRemove, lang }) 
             <option value="common">{t('typeCommon', {}, lang)}</option>
             <option value="preferred">{t('typePreferred', {}, lang)}</option>
             <option value="esop">{t('typeEsop', {}, lang)}</option>
-            <option value="safe">{t('typeSafe', {}, lang)}</option>
             <option value="warrant">{t('typeWarrant', {}, lang)}</option>
 
           </select>
@@ -311,6 +313,11 @@ function EquityClassInput({ equityClass, onUpdate, onRemove, canRemove, lang }) 
             {config.fields.map(field => {
               const fieldConf = fieldConfig[field];
               if (!fieldConf) return null;
+              
+              // participationCap 仅在勾选参与权后显示
+              if (field === 'participationCap' && !equityClass.participation) {
+                return null;
+              }
               
               if (fieldConf.type === 'checkbox') {
                 return (

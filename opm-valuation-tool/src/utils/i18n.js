@@ -40,6 +40,7 @@ const zh = {
   liqPref: '清算优先权倍数',
   conversionRatio: '转股比例',
   participation: '参与权 (Participation)',
+  participationCap: '参与上限倍数 (Cap)',
   exercisePrice: '行权价格 ($)',
   vestedPct: '已行权比例 (Vested %)',
   vestingProb: '行权概率',
@@ -55,7 +56,6 @@ const zh = {
   typeCommon: '普通股 (Common)',
   typePreferred: '优先股 (Preferred)',
   typeEsop: '员工期权 (ESOP)',
-  typeSafe: 'SAFE',
 
   typeWarrant: '认股权证 (Warrant)',
   
@@ -63,8 +63,6 @@ const zh = {
   tipCommon: '💡 普通股：最基本的股权形式，享有剩余价值分配权，无清算优先权。',
   tipPreferred: '💡 优先股：享有清算优先权，可选择参与权（参与分配剩余价值），可按转股比例转换为普通股。',
   tipEsop: '💡 ESOP 员工期权计划：授予员工的股票期权，需考虑行权价格、已行权比例和行权概率。使用 Treasury Stock Method 计算稀释效应。',
-  tipSafe: '💡 SAFE (Simple Agreement for Future Equity)：YC 发明的未来股权简单协议，可设置估值上限和/或折扣率，在下次融资时转换为股权。',
-
   tipWarrant: '💡 认股权证：赋予持有人在特定时间内以特定价格购买公司股票的权利，通常与债券或优先股一同发行。',
   
   // 结果展示
@@ -132,9 +130,6 @@ const zh = {
   smartNamePreferred: '{name} (清算 @ ${price})',
   smartNameCommon: '{name} (普通股 @ ${price})',
   smartNameEsop: '{name} (ESOP @ 行权 ${price})',
-  smartNameSafe: '{name} (SAFE @ ${price})',
-
-
   smartNameWarrant: '{name} (Warrant @ ${price})',
 };
 
@@ -170,6 +165,7 @@ const en = {
   liqPref: 'Liquidation Preference',
   conversionRatio: 'Conversion Ratio',
   participation: 'Participation',
+  participationCap: 'Participation Cap (x)',
   exercisePrice: 'Exercise Price ($)',
   vestedPct: 'Vested %',
   vestingProb: 'Vesting Probability',
@@ -184,15 +180,11 @@ const en = {
   typeCommon: 'Common Stock',
   typePreferred: 'Preferred Stock',
   typeEsop: 'ESOP',
-  typeSafe: 'SAFE',
-
   typeWarrant: 'Warrant',
   
   tipCommon: '💡 Common Stock: Basic equity with residual claim, no liquidation preference.',
   tipPreferred: '💡 Preferred Stock: Has liquidation preference, may have participation rights, convertible to common.',
   tipEsop: '💡 ESOP: Employee stock options. Considers exercise price, vesting schedule, and vesting probability. Uses Treasury Stock Method.',
-  tipSafe: '💡 SAFE: Simple Agreement for Future Equity by Y Combinator. May have valuation cap and/or discount rate.',
-
   tipWarrant: '💡 Warrant: Right to purchase shares at a specified price within a specified timeframe.',
   
   results: 'Valuation Results',
@@ -251,9 +243,6 @@ const en = {
   smartNamePreferred: '{name} (Liq @ ${price})',
   smartNameCommon: '{name} (Common @ ${price})',
   smartNameEsop: '{name} (ESOP @ Strike ${price})',
-  smartNameSafe: '{name} (SAFE @ ${price})',
-
-
   smartNameWarrant: '{name} (Warrant @ ${price})',
 };
 
@@ -286,8 +275,6 @@ export function getTypeLabel(type, lang) {
     common: lang === 'en' ? 'Common Stock' : '普通股',
     preferred: lang === 'en' ? 'Preferred Stock' : '优先股',
     esop: lang === 'en' ? 'ESOP' : '员工期权',
-    safe: 'SAFE',
-
     warrant: lang === 'en' ? 'Warrant' : '认股权证',
   };
   return map[type] || type;
@@ -318,7 +305,7 @@ export function generateSmartName(ec, lang = 'zh') {
   // ============================================================
   let baseName = ec.name;
   // 匹配以 " (" 开头，包含特定关键词的后缀
-  const suffixPattern = /\s*\(.*(?:@|$|行权|清算|普通股|Liq|Common|Strike|ESOP|SAFE|Warrant).*\)$/;
+  const suffixPattern = /\s*\(.*(?:@|$|行权|清算|普通股|Liq|Common|Strike|ESOP|Warrant).*\)$/;
 
   if (suffixPattern.test(baseName)) {
     // 找到最后一个 " (" 的位置
@@ -341,9 +328,6 @@ export function generateSmartName(ec, lang = 'zh') {
     esop: lang === 'zh'
       ? `${baseName} (ESOP @ 行权 $${ec.exercisePrice || 0})`
       : `${baseName} (ESOP @ Strike $${ec.exercisePrice || 0})`,
-    safe: lang === 'zh'
-      ? `${baseName} (SAFE @ $${ec.pricePerShare || 0})`
-      : `${baseName} (SAFE @ $${ec.pricePerShare || 0})`,
     warrant: lang === 'zh'
       ? `${baseName} (Warrant @ $${ec.exercisePrice || 0})`
       : `${baseName} (Warrant @ $${ec.exercisePrice || 0})`,

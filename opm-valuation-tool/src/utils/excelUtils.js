@@ -287,11 +287,9 @@ export async function importFromExcel(file) {
               exercisePrice: parseFloat(row[8]) || 0,
               vestedPercentage: parseFloat(row[9]) || 0,
               probabilityOfVesting: parseFloat(row[10]) || 0.5,
-              // SAFE 参数
-              investmentAmount: parseFloat(row[11]) || 0,
-              valuationCap: parseFloat(row[12]) || 0,
-              discountRate: parseFloat(row[13]) || 0
-
+              principal: parseFloat(row[14]) || 0,
+              interestRate: parseFloat(row[15]) || 0,
+              conversionPrice: parseFloat(row[16]) || 0
             };
             
             equityClasses.push(equityClass);
@@ -372,7 +370,7 @@ export function downloadTemplate(lang = 'zh') {
   // 字段说明行（在表头下方显示为注释）
   const fieldDescriptions = [
     lang === 'en' ? 'Security name (e.g., Series A)' : '证券名称（如 Series A）',
-    lang === 'en' ? 'Type: common/preferred/esop/safe/warrant' : '类型: common/preferred/esop/safe/warrant',
+    lang === 'en' ? 'Type: common/preferred/esop/warrant' : '类型: common/preferred/esop/warrant',
 
     lang === 'en' ? 'Number of shares (integer)' : '持股数量（整数）',
     lang === 'en' ? 'Price per share (for preferred)' : '每股价格（优先股使用）',
@@ -383,16 +381,11 @@ export function downloadTemplate(lang = 'zh') {
     lang === 'en' ? 'Strike price. Common: fill 0. ESOP: must fill actual strike price' : '行权价。普通股填 0；ESOP 必须填写实际行权价',
     lang === 'en' ? 'Vested percentage (0-1). ESOP only' : '已行权比例（0-1）。仅 ESOP 使用',
     lang === 'en' ? 'Vesting probability (0-1). ESOP only' : '行权概率（0-1）。仅 ESOP 使用',
-    lang === 'en' ? 'Investment amount. SAFE only' : '投资金额。仅 SAFE 使用',
-    lang === 'en' ? 'Valuation cap. SAFE only' : '估值上限。仅 SAFE 使用',
-    lang === 'en' ? 'Discount rate (0-1). SAFE only' : '折扣率（0-1）。仅 SAFE 使用'
-
   ];
 
   const exampleData = [
     ['Series A Preferred', 'preferred', 1000000, 1.00, 1.0, 'No', 1.0, 3, '', '', '', '', '', ''],
     ['ESOP Pool', 'esop', 500000, '', '', '', '', 2, 0.50, 0.40, 0.60, '', '', ''],
-    ['SAFE Investors', 'safe', 500000, 1.00, 1.0, 'No', 1.0, 3, '', '', '', '', '', ''],
     ['Common Stock', 'common', 5000000, 0.10, 0, 'No', 1.0, 0, '', '', '', '', '', '']
   ];
 

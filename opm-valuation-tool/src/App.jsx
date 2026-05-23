@@ -57,16 +57,6 @@ function App() {
     },
     {
       id: 'equity-3',
-      name: 'SAFE Investors',
-      type: 'safe',
-      shares: 0,
-      investmentAmount: 500000,
-      valuationCap: 5000000,
-      discountRate: 0.20,
-      seniority: 1
-    },
-    {
-      id: 'equity-4',
       name: 'Common Stock',
       type: 'common',
       shares: 5000000,
