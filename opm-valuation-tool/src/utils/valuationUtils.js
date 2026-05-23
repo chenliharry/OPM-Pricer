@@ -387,6 +387,57 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
   perShareEvents.sort((a, b) => a.strike - b.strike);
 
   // ============================================================
+  // Step 4.5: Merge events with the same strike price
+  // 当多个证券（如 Preferred 转股、ESOP、Warrant）具有相同的每股行权价时，
+  // 它们应该共享同一个断点（Breakpoint），而不是各自生成独立的断点。
+  // 
+  // 合并规则：
+  // - 所有 shares 加总（注意 removesFromActive 的 shares 为负值）
+  // - 如果任一事件有 removesPref，则合并事件也有 removesPref
+  // - 如果任一事件有 removesFromActive，则合并事件也有 removesFromActive
+  // - className 合并为逗号分隔的列表，便于在边际分配矩阵中匹配
+  // ============================================================
+  const mergedEvents = [];
+  let i = 0;
+  while (i < perShareEvents.length) {
+    const currentStrike = perShareEvents[i].strike;
+    let totalShares = 0;
+    let hasRemovesPref = false;
+    let hasRemovesFromActive = false;
+    let prefAmount = 0;
+    let classNames = [];
+    let types = [];
+    
+    // Collect all events with the same strike price
+    while (i < perShareEvents.length && perShareEvents[i].strike === currentStrike) {
+      const ev = perShareEvents[i];
+      totalShares += ev.removesFromActive ? -ev.shares : ev.shares;
+      if (ev.removesPref) {
+        hasRemovesPref = true;
+        prefAmount += ev.prefAmount || 0;
+      }
+      if (ev.removesFromActive) {
+        hasRemovesFromActive = true;
+      }
+      classNames.push(ev.className);
+      types.push(ev.type);
+      i++;
+    }
+    
+    mergedEvents.push({
+      strike: currentStrike,
+      shares: Math.abs(totalShares),
+      removesPref: hasRemovesPref,
+      removesFromActive: hasRemovesFromActive,
+      prefAmount: prefAmount,
+      classNames: classNames,
+      types: types,
+      // netSharesChange: positive = add to denominator, negative = remove from denominator
+      netSharesChange: totalShares
+    });
+  }
+
+  // ============================================================
   // Step 5: Iteratively push breakpoints and expand/contract the denominator
   // This loop ensures that K grows linearly with the number of events!
   // 
@@ -399,7 +450,7 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
   // ============================================================
   const processedEvents = [];
   
-  perShareEvents.forEach(event => {
+  mergedEvents.forEach(event => {
     // Formula: BP = Cumulative Pref + (Current Strike * Cumulative Active Shares up to this point)
     const triggerEV = cumulativeAbsolutePref + (event.strike * activeShares);
     
@@ -416,20 +467,22 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
     // It enters the denominator and dilutes the NEXT higher strike price calculation!
     // For participating preferred cap events, we REMOVE shares from activeShares
     // (the preferred stops participating and converts to common).
-    if (event.removesFromActive) {
-      activeShares -= event.shares;
-    } else {
-      activeShares += event.shares;
-    }
+    activeShares += event.netSharesChange;
     
-    processedEvents.push({
-      type: event.type,
-      className: event.className,
-      triggerEV,
-      triggerPrice: event.strike,
-      sharesAdded: event.removesFromActive ? -event.shares : event.shares,
-      activeSharesAfter: activeShares,
-      cumulativeAbsolutePrefAfter: cumulativeAbsolutePref
+    // 为每个原始 className 生成一个 processedEvent 条目
+    // 这样 calculateMarginalAllocationMatrix 中的 classBreakpointMap
+    // 和 esopBreakpointByPrice 仍然能正确匹配
+    event.classNames.forEach((className, idx) => {
+      const type = event.types[idx];
+      processedEvents.push({
+        type: type,
+        className: className,
+        triggerEV,
+        triggerPrice: event.strike,
+        sharesAdded: event.netSharesChange,
+        activeSharesAfter: activeShares,
+        cumulativeAbsolutePrefAfter: cumulativeAbsolutePref
+      });
     });
   });
 
@@ -455,8 +508,8 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
   // 最后一个断点就是 fullyDilutedBP，代表所有证券被完全行权的状态。
   // ============================================================
   let fullyDilutedBP = cumulativeAbsolutePref;
-  if (perShareEvents.length > 0) {
-    const lastEvent = perShareEvents[perShareEvents.length - 1];
+  if (mergedEvents.length > 0) {
+    const lastEvent = mergedEvents[mergedEvents.length - 1];
     fullyDilutedBP = cumulativeAbsolutePref + (lastEvent.strike * activeShares);
   }
   
