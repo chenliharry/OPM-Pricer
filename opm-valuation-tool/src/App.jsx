@@ -68,12 +68,13 @@ function App() {
     }
   ]);
 
-  // 估值参数
+  // 估值参数（含股息率和 DLOM 参数）
   const [parameters, setParameters] = useState({
     totalEquityValue: 10000000, // $10M
     volatility: 0.50, // 50%
     riskFreeRate: 0.04, // 4%
-    timeToExit: 3.0 // 3 years
+    timeToExit: 3.0, // 3 years
+    dividendYield: 0.00 // 股息率 0%
   });
 
   // 估值结果（包含断点分配表）
@@ -86,6 +87,7 @@ function App() {
   // UI 状态
   const [showParameters, setShowParameters] = useState(false);
   const [notification, setNotification] = useState(null);
+  const [isDLOMEnabled, setIsDLOMEnabled] = useState(false);
 
   // 自动计算估值
   useEffect(() => {
@@ -96,7 +98,8 @@ function App() {
           equityClasses,
           parameters.volatility,
           parameters.riskFreeRate,
-          parameters.timeToExit
+          parameters.timeToExit,
+          parameters.dividendYield || 0
         );
         setValuationResult(result);
       } catch (error) {
@@ -317,14 +320,30 @@ function App() {
               </button>
             </div>
             
-            <button
-              onClick={handleExport}
-              disabled={valuationResult.results.length === 0}
-              className="px-5 py-2.5 rounded-xl bg-green-500 hover:bg-green-600 text-white transition-all duration-200 flex items-center space-x-2 shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Download className="w-4 h-4" />
-              <span className="font-medium">{t('exportResult', {}, lang)}</span>
-            </button>
+            <div className="flex items-center space-x-3">
+              {/* DLOM 开关 */}
+              <button
+                onClick={() => setIsDLOMEnabled(!isDLOMEnabled)}
+                className={`px-4 py-2.5 rounded-xl transition-all duration-200 flex items-center space-x-2 ${
+                  isDLOMEnabled 
+                    ? 'bg-purple-500 hover:bg-purple-600 text-white shadow-md' 
+                    : 'bg-apple-gray-100 hover:bg-apple-gray-200 text-apple-gray-700'
+                }`}
+              >
+                <span className="text-sm font-medium">
+                  {lang === 'en' ? 'DLOM' : 'DLOM 测算'}
+                </span>
+              </button>
+            
+              <button
+                onClick={handleExport}
+                disabled={valuationResult.results.length === 0}
+                className="px-5 py-2.5 rounded-xl bg-green-500 hover:bg-green-600 text-white transition-all duration-200 flex items-center space-x-2 shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Download className="w-4 h-4" />
+                <span className="font-medium">{t('exportResult', {}, lang)}</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -357,6 +376,7 @@ function App() {
             breakpointTable={valuationResult.breakpointTable}
             totalAllocated={valuationResult.totalAllocated}
             lang={lang}
+            isDLOMEnabled={isDLOMEnabled}
           />
         )}
         {/* 浮动添加按钮 - 固定在右下角 */}

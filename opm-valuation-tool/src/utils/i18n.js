@@ -32,6 +32,19 @@ const zh = {
   paramTip3: '预期期限: 通常为下一轮融资或 IPO 的预期时间',
   paramTip4: '参数调整后，估值结果会实时更新',
   
+  // 股息率
+  dividendYield: '股息率 (Dividend Yield) - q',
+  paramDesc5: '连续股息率，如果企业支付股息，会降低看涨期权价值。通常为 0-5%',
+  
+  // DLOM
+  dlomTitle: 'Finnerty DLOM（缺乏市场流通性折扣）',
+  classVolatility: '层级特有波动率 (σ_class)',
+  omega: '期权弹性 (Omega)',
+  delta: 'Delta (敏感度)',
+  dlomRate: 'DLOM 折扣率',
+  discountedValue: '折扣后价值',
+  dlomFormula: 'DLOM = 1 - e^(-σ_class × √T)',
+  
   // 资本结构
   capStructure: '资本结构配置',
   equityType: '股权类型',
@@ -157,6 +170,19 @@ const en = {
   paramTip2: 'Risk-free rate: Use government bond yield matching expected term',
   paramTip3: 'Time to exit: Typically next financing round or IPO timeline',
   paramTip4: 'Results update in real-time as parameters change',
+  
+  // Dividend Yield
+  dividendYield: 'Dividend Yield - q',
+  paramDesc5: 'Continuous dividend yield. Higher dividends reduce call option value. Typically 0-5%',
+  
+  // DLOM
+  dlomTitle: 'Finnerty DLOM (Discount for Lack of Marketability)',
+  classVolatility: 'Class Volatility (σ_class)',
+  omega: 'Option Omega',
+  delta: 'Delta (Sensitivity)',
+  dlomRate: 'DLOM Rate',
+  discountedValue: 'Discounted Value',
+  dlomFormula: 'DLOM = 1 - e^(-σ_class × √T)',
   
   capStructure: 'Capital Structure',
   equityType: 'Equity Type',

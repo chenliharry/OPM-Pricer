@@ -124,6 +124,42 @@ function ParametersPanel({ parameters, setParameters, onClose, lang }) {
           </p>
         </div>
 
+        {/* 股息率 */}
+        <div>
+          <label className="block text-sm font-medium text-apple-gray-700 mb-2">
+            {t('dividendYield', {}, lang)}
+          </label>
+          <div className="space-y-3">
+            <div className="relative">
+              <input
+                type="number"
+                step="0.001"
+                min="0"
+                max="0.2"
+                value={parameters.dividendYield || 0}
+                onChange={(e) => handleChange('dividendYield', parseFloat(e.target.value) || 0)}
+                className="w-full px-4 py-3 bg-white rounded-xl border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
+                placeholder="0.00"
+              />
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-apple-gray-500">
+                {((parameters.dividendYield || 0) * 100).toFixed(2)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="0.2"
+              step="0.001"
+              value={parameters.dividendYield || 0}
+              onChange={(e) => handleChange('dividendYield', parseFloat(e.target.value))}
+              className="w-full h-2 bg-apple-gray-200 rounded-lg appearance-none cursor-pointer accent-apple-blue-500"
+            />
+          </div>
+          <p className="text-xs text-apple-gray-500 mt-2">
+            {t('paramDesc5', {}, lang)}
+          </p>
+        </div>
+
         {/* 预期期限 */}
         <div>
           <label className="block text-sm font-medium text-apple-gray-700 mb-2">

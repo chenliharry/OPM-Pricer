@@ -45,6 +45,37 @@
  *    - 每个 Tranche 的价值按各证券的有效股数比例分配
  *    - 不再有"三层瀑布"的硬编码限制
  *    - 支持任意数量的断点区间
+ * 
+ * ============================================================
+ * 股息率调整（Dividend-Adjusted Black-Scholes）
+ * ============================================================
+ * 
+ * 当标的资产支付股息时，Black-Scholes 模型需要调整：
+ *   d1 = [ln(S/K) + (r - q + σ²/2)T] / (σ√T)
+ *   d2 = d1 - σ√T
+ *   C = S·e^(-qT)·N(d1) - K·e^(-rT)·N(d2)
+ * 
+ * 其中 q 为连续股息率。股息率越高，看涨期权价值越低，
+ * 因为股息支付会减少标的资产的价值增长。
+ * 
+ * ============================================================
+ * Finnerty DLOM 模型（Discount for Lack of Marketability）
+ * ============================================================
+ * 
+ * Finnerty (2012) 模型基于期权定价理论计算缺乏市场流通性折扣：
+ *   DLOM = 1 - e^(-σ_class × √T_holding)
+ * 
+ * 其中：
+ * - σ_class 为该层级证券的特有波动率
+ * - T_holding 为预期持有期（通常与 OPM 的 timeToExit 一致）
+ * 
+ * 层级特有波动率 σ_class 的计算：
+ * 使用期权弹性（Omega）方法：
+ *   Omega = (S / V_class) × (∂V_class/∂S) = (S / V_class) × delta_class
+ *   σ_class = Omega × σ_firm
+ * 
+ * 其中 delta_class 是该层级证券对标的资产价值变化的敏感度，
+ * 通过 OPM 断点分配矩阵的边际变化率计算。
  */
 
 /**
@@ -61,14 +92,28 @@ export function normalCDF(x) {
 }
 
 /**
- * 计算 Black-Scholes 模型中的 d1 参数
- * 公式: d1 = [ln(S/K) + (r + σ²/2)T] / (σ√T)
+ * 标准正态分布概率密度函数 (PDF)
+ * 公式: φ(x) = (1/√(2π)) · e^(-x²/2)
  */
-export function calculateD1(S, K, r, sigma, T) {
+export function normalPDF(x) {
+  if (x === Infinity || x === -Infinity) return 0;
+  return (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-x * x / 2);
+}
+
+/**
+ * 计算 Black-Scholes 模型中的 d1 参数（含股息调整）
+ * 公式: d1 = [ln(S/K) + (r - q + σ²/2)T] / (σ√T)
+ * 
+ * 在四大估值实务中：
+ * - 如果标的资产支付股息（q > 0），d1 会减小
+ * - 因为股息支付降低了资产的预期增长率
+ * - 这导致看涨期权价值下降，看跌期权价值上升
+ */
+export function calculateD1(S, K, r, sigma, T, q = 0) {
   if (K === 0) return Infinity;
   if (S === 0) return -Infinity;
   if (sigma === 0 || T === 0) return S > K ? Infinity : -Infinity;
-  const numerator = Math.log(S / K) + (r + (sigma * sigma) / 2) * T;
+  const numerator = Math.log(S / K) + (r - q + (sigma * sigma) / 2) * T;
   const denominator = sigma * Math.sqrt(T);
   return numerator / denominator;
 }
@@ -82,30 +127,33 @@ export function calculateD2(d1, sigma, T) {
 }
 
 /**
- * 计算看涨期权价值（Call Option Value）
- * 公式: C = S·N(d1) - K·e^(-rT)·N(d2)
+ * 计算看涨期权价值（Call Option Value）- 含股息调整
+ * 公式: C = S·e^(-qT)·N(d1) - K·e^(-rT)·N(d2)
  * 
  * 在 OPM 中的应用：
  * 每个断点 K 对应一个看涨期权
  * - 标的资产：企业总价值 S
  * - 行权价：断点 K
+ * - 股息率 q：如果企业支付股息，会降低看涨期权价值
  * 
  * 注意：C(K) 是 K 的单调递减函数。
  * 即：K 越大，C(K) 越小。
  * 这确保了 C(Lower) > C(Upper) 对于 Lower < Upper 恒成立。
  */
-export function calculateCallOption(S, K, r, sigma, T) {
+export function calculateCallOption(S, K, r, sigma, T, q = 0) {
   if (K === 0 || K === null || K === undefined) {
-    return { value: S, d1: Infinity, d2: Infinity, Nd1: 1, Nd2: 1 };
+    // 行权价为 0 时，看涨期权价值等于标的资产现值（含股息调整）
+    return { value: S * Math.exp(-q * T), d1: Infinity, d2: Infinity, Nd1: 1, Nd2: 1 };
   }
   if (S === 0) {
     return { value: 0, d1: -Infinity, d2: -Infinity, Nd1: 0, Nd2: 0 };
   }
-  const d1 = calculateD1(S, K, r, sigma, T);
+  const d1 = calculateD1(S, K, r, sigma, T, q);
   const d2 = calculateD2(d1, sigma, T);
   const Nd1 = normalCDF(d1);
   const Nd2 = normalCDF(d2);
-  const callValue = S * Nd1 - K * Math.exp(-r * T) * Nd2;
+  // 含股息调整的看涨期权公式
+  const callValue = S * Math.exp(-q * T) * Nd1 - K * Math.exp(-r * T) * Nd2;
   return { value: Math.max(0, callValue), d1, d2, Nd1, Nd2 };
 }
 
@@ -260,30 +308,11 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
   // Step 4: Extract and Sort ALL Per-Share Strike/Trigger Events
   // Gather all ESOPs (grouped by exercise price), Warrants, Non-participating Preferred,
   // and Participating Preferred (participation cap events).
-  // 
-  // ESOP 按行权价分组逻辑：
-  // 相同行权价的 ESOP 批次共享同一个断点，不同行权价的 ESOP 有各自独立的断点。
-  // 每个组的总股数 = 该行权价下所有 ESOP 批次的有效股数之和。
-  // 
-  // Participating Preferred 参与上限事件：
-  // 带参与权的优先股在参与剩余分配时，通常有一个参与上限（Participation Cap）。
-  // 当每股价值达到上限时，优先股停止参与分配，转为普通股。
-  // 参与上限断点 = cumulativeAbsolutePref + (capPerShare × activeShares)
-  // 其中 capPerShare = pricePerShare × liquidationPreference（或约定的上限倍数）。
-  // 
-  // 这些断点可能与 ESOP 断点相互交错，因此需要统一排序。
   // ============================================================
 
   let perShareEvents = [];
 
-  // ESOP events: group by exercise price, one event per unique exercise price
-  // 相同行权价的 ESOP 批次共享同一个断点，不同行权价的 ESOP 有各自独立的断点
-  // 
-  // 注意：行权价为 0 的 ESOP 视为"始终解锁"（Always Vested），
-  // 它们从第一个断点开始就参与分配，不需要等待任何触发条件。
-  // 这些 ESOP 仍然加入 perShareEvents（strike=0），
-  // 这样在 calculateMarginalAllocationMatrix 中可以通过
-  // esopBreakpointByPrice 匹配到它们，确保它们始终被计入分母。
+  // ESOP events: group by exercise price
   const esopByPrice = {};
   equityClasses
     .filter(c => c.type === 'esop' && c.exercisePrice !== undefined && c.exercisePrice !== null)
@@ -299,7 +328,6 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
   
   Object.entries(esopByPrice).forEach(([priceStr, group]) => {
     const price = parseFloat(priceStr);
-    // 生成描述性名称：包含行权价和总股数
     const className = price > 0 ? `ESOP @ $${price}` : `ESOP @ $0 (Always Vested)`;
     perShareEvents.push({
       id: `esop-${priceStr}`,
@@ -310,7 +338,7 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
     });
   });
 
-  // Warrant events (individual, not aggregated)
+  // Warrant events
   equityClasses
     .filter(c => c.type === 'warrant')
     .filter(c => c.exercisePrice && c.exercisePrice > 0)
@@ -325,9 +353,6 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
     });
 
   // Non-participating Preferred conversion events
-  // The conversion trigger price is the price per share at which
-  // the liquidation preference equals the conversion value.
-  // Formula: conversionPrice = liquidationPreferenceAmount / (shares * conversionRatio)
   equityClasses
     .filter(c => c.type === 'preferred' && !c.participation && c.shares > 0)
     .forEach(c => {
@@ -341,32 +366,16 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
           type: 'non_participating_preferred',
           strike: conversionPrice,
           shares: convertedShares,
-          // Flag to indicate this event removes from cumulativeAbsolutePref
           removesPref: true,
           prefAmount: prefAmount
         });
       }
     });
 
-  // ============================================================
   // Participating Preferred participation cap events
-  // 带参与权的优先股在参与剩余分配时，有一个参与上限。
-  // 当每股价值达到上限时，优先股停止参与分配，转为普通股。
-  // 
-  // 参与上限（capPerShare）的计算：
-  // 使用 participationCap 字段（默认值为 1，即 1x 参与上限）。
-  // capPerShare = pricePerShare × participationCap
-  // 
-  // 例如：Series A 以 $1/股投资，participationCap = 3（3x 参与上限）
-  // 则 capPerShare = $1 × 3 = $3/股
-  // 当每股价值达到 $3 时，Series A 停止参与分配。
-  // 
-  // 注意：如果 participationCap 为 0 或未设置，则视为无上限（永久参与）。
-  // ============================================================
   equityClasses
     .filter(c => c.type === 'preferred' && c.participation && c.shares > 0)
     .forEach(c => {
-      // 参与上限 = pricePerShare × participationCap（默认 1x）
       const capMultiple = c.participationCap !== undefined && c.participationCap !== null ? c.participationCap : 1;
       const capPerShare = (c.pricePerShare || 0) * capMultiple;
       if (capPerShare > 0) {
@@ -376,7 +385,6 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
           type: 'participating_preferred_cap',
           strike: capPerShare,
           shares: c.shares * (c.conversionRatio || 1),
-          // Flag to indicate this event removes from activeShares (stops participating)
           removesFromActive: true,
           capPerShare
         });
@@ -390,12 +398,6 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
   // Step 4.5: Merge events with the same strike price
   // 当多个证券（如 Preferred 转股、ESOP、Warrant）具有相同的每股行权价时，
   // 它们应该共享同一个断点（Breakpoint），而不是各自生成独立的断点。
-  // 
-  // 合并规则：
-  // - 所有 shares 加总（注意 removesFromActive 的 shares 为负值）
-  // - 如果任一事件有 removesPref，则合并事件也有 removesPref
-  // - 如果任一事件有 removesFromActive，则合并事件也有 removesFromActive
-  // - className 合并为逗号分隔的列表，便于在边际分配矩阵中匹配
   // ============================================================
   const mergedEvents = [];
   let i = 0;
@@ -408,7 +410,6 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
     let classNames = [];
     let types = [];
     
-    // Collect all events with the same strike price
     while (i < perShareEvents.length && perShareEvents[i].strike === currentStrike) {
       const ev = perShareEvents[i];
       totalShares += ev.removesFromActive ? -ev.shares : ev.shares;
@@ -432,46 +433,24 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
       prefAmount: prefAmount,
       classNames: classNames,
       types: types,
-      // netSharesChange: positive = add to denominator, negative = remove from denominator
       netSharesChange: totalShares
     });
   }
 
   // ============================================================
   // Step 5: Iteratively push breakpoints and expand/contract the denominator
-  // This loop ensures that K grows linearly with the number of events!
-  // 
-  // 事件类型处理：
-  // - ESOP: 解锁后股数流入分母（稀释后续区间）
-  // - Warrant: 行权后股数流入分母
-  // - Non-participating Preferred: 转股后股数流入分母
-  // - Participating Preferred (cap): 达到参与上限后，股数从分母中移除
-  //   因为参与权优先股在达到上限后停止参与分配，转为普通股
   // ============================================================
   const processedEvents = [];
   
   mergedEvents.forEach(event => {
-    // Formula: BP = Cumulative Pref + (Current Strike * Cumulative Active Shares up to this point)
     const triggerEV = cumulativeAbsolutePref + (event.strike * activeShares);
     
-    // 所有事件都加入断点矩阵，无论 triggerEV 是否大于 S。
-    // 即使 triggerEV > S，该断点仍然有意义：
-    // - 它代表该证券的"行权门槛"在 BS 模型中的位置
-    // - C(triggerEV) 的值很小（接近 0），但该证券仍然参与残差分配
-    // - 断点矩阵的完整性确保了边际分配比例矩阵能正确计算每个区间的分配
     if (triggerEV > 0) {
       K.push(triggerEV);
     }
     
-    // CRITICAL ENGINE REFACTOR: This option is now "In-The-Money".
-    // It enters the denominator and dilutes the NEXT higher strike price calculation!
-    // For participating preferred cap events, we REMOVE shares from activeShares
-    // (the preferred stops participating and converts to common).
     activeShares += event.netSharesChange;
     
-    // 为每个原始 className 生成一个 processedEvent 条目
-    // 这样 calculateMarginalAllocationMatrix 中的 classBreakpointMap
-    // 和 esopBreakpointByPrice 仍然能正确匹配
     event.classNames.forEach((className, idx) => {
       const type = event.types[idx];
       processedEvents.push({
@@ -488,24 +467,6 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
 
   // ============================================================
   // Step 6: Calculate the "Fully Diluted" breakpoint
-  // 最后一个明确断点（上限点）：所有具有优先清算权和参与上限的
-  // 股份被完全行权或满足的最大门槛值。
-  // 
-  // 公式：fullyDilutedBP = cumulativeAbsolutePref + (lastEvent.strike × activeShares)
-  // 其中 lastEvent 是最后一个 perShareEvent（行权价最高的事件）。
-  // 如果没有任何 perShareEvent，则 fullyDilutedBP = cumulativeAbsolutePref。
-  // 
-  // 注意：fullyDilutedBP 可能大于 S（企业总价值），也可能小于 S。
-  // 如果 fullyDilutedBP < S，则 S 之后的残差价值按完全稀释比例分配。
-  // 如果 fullyDilutedBP > S，则 S 位于中间某个位置，最后一个断点
-  // 仍然是 fullyDilutedBP（代表所有证券被完全行权的状态）。
-  // 
-  // 关键：fullyDilutedBP 不设上限（不 cap at S），因为它是"最后一个
-  // 明确断点"。之后就是"正无穷"状态，增量价值按完全稀释比例分配。
-  // 
-  // 注意：S（企业总价值）不再作为断点加入 K 数组。
-  // S 是 BS 公式中的标的资产价值，不是行权价。
-  // 最后一个断点就是 fullyDilutedBP，代表所有证券被完全行权的状态。
   // ============================================================
   let fullyDilutedBP = cumulativeAbsolutePref;
   if (mergedEvents.length > 0) {
@@ -513,14 +474,10 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
     fullyDilutedBP = cumulativeAbsolutePref + (lastEvent.strike * activeShares);
   }
   
-  // Push the fully diluted breakpoint as the LAST explicit breakpoint
-  // This is the point where all securities are fully exercised/satisfied.
-  // After this point, residual value is distributed proportionally.
   if (fullyDilutedBP > 0 && !K.includes(fullyDilutedBP)) {
     K.push(fullyDilutedBP);
   }
 
-  // Deduplicate and sort ascending to handle floating point anomalies
   const uniqueK = [...new Set(K)].sort((a, b) => a - b);
   
   return { breakpoints: uniqueK, cumulativeAbsolutePref, processedEvents, fullyDilutedBP };
@@ -529,48 +486,13 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
 /**
  * ============================================================
  * 计算给定区间的边际分配比例矩阵
- * 
- * 核心逻辑：
- * 每个 Tranche [K_{i-1}, K_i] 的增量价值按该区间内所有活跃证券的
- * 有效股数比例分配。有效股数随断点位置动态变化：
- * 
- * - 在绝对清算优先权范围内（K_upper ≤ cumulativeAbsolutePref）：
- *   只有 seniority > 1 的证券（Preferred）参与分配，
- *   按清算优先权金额比例分配。
- * 
- * - 在清算优先权范围外（K_lower ≥ cumulativeAbsolutePref）：
- *   Common 常驻分母；
- *   参与权优先股常驻分母；
- *   ESOP/Warrant 阶梯式判断：只有 K_lower ≥ 其专属断点时才计入；
- *   非参与权优先股在转股后计入。
- * 
- * @param {Array} breakpoints 已排序的唯一断点数组 K
- * @param {Array} equityClasses 包含所有证券属性的数组
- * @param {number} cumulativeAbsolutePref 绝对清算优先权总额
- * @param {Array} processedEvents 事件处理记录（含每个 ESOP/优先股的触发断点）
- * @returns {Array} 每一个元素对应一个区间的分配比例对象
  * ============================================================
  */
 export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cumulativeAbsolutePref, processedEvents) {
   const allocationMatrix = [];
 
-  // ============================================================
-  // 为每个 ESOP/Warrant/Participating Preferred 计算其专属的企业价值断点
-  // 这个断点用于判断该证券在某个 Tranche 中是否已解锁/已到达上限
-  // 
-  // 对于 ESOP：相同行权价的 ESOP 批次共享同一个断点。
-  // 使用 processedEvents 中记录的 triggerEV，通过 className 匹配。
-  // className 格式为 "ESOP @ $<exercisePrice>"。
-  // 
-  // 对于 Warrant：每个 Warrant 有独立的断点，通过 className 匹配。
-  // 
-  // 对于 Participating Preferred (cap)：达到参与上限后，该优先股
-  // 停止参与分配，其股数从分母中移除。
-  // ============================================================
   const classBreakpointMap = {};
-  // ESOP 按行权价映射：exercisePrice → triggerEV
   const esopBreakpointByPrice = {};
-  // Participating Preferred cap 映射：className → triggerEV
   const partPrefCapMap = {};
   processedEvents.forEach(event => {
     classBreakpointMap[event.className] = event.triggerEV;
@@ -582,9 +504,6 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
     }
   });
 
-  // ============================================================
-  // 遍历每一个闭区间 (Tranche)
-  // ============================================================
   for (let i = 1; i < breakpoints.length; i++) {
     const K_lower = breakpoints[i - 1];
     const K_upper = breakpoints[i];
@@ -592,16 +511,6 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
     let activeSharesMap = {};
     let totalActiveSharesInTranche = 0;
 
-    // ============================================================
-    // 规则判定：属于绝对清算区间
-    // 当 K_upper ≤ cumulativeAbsolutePref 时，该区间完全属于
-    // 清算优先权范围。只有 seniority > 1 的证券参与分配：
-    //   - Preferred (seniority=3): 清算优先权金额
-    // 
-    // 注意：这里按清算优先权金额比例分配，而不是按股数比例。
-    // 因为在这个区间内，优先权持有者获得的是"清算优先权金额"，
-    // 而不是"股权价值"。
-    // ============================================================
     if (K_upper <= cumulativeAbsolutePref) {
       equityClasses.forEach(c => {
         if ((c.seniority || 0) > 1) {
@@ -616,27 +525,12 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
           activeSharesMap[c.name] = 0;
         }
       });
-    } 
-
-    // ============================================================
-    // 规则判定：属于清算填满后的剩余分配区间
-    // 当 K_lower ≥ cumulativeAbsolutePref 时，清算优先权已被满足，
-    // 剩余价值按股数比例分配。
-    // 
-    // 各证券的参与规则：
-    // - Common: 常驻分母，始终按实际股数计入
-    // - Participating Preferred: 常驻分母，始终按转股比例计入
-    // - ESOP: 阶梯式判断，只有 K_lower ≥ 其专属断点时才计入
-    // - Non-participating Preferred: 转股后（K_lower ≥ 转股断点）才计入
-    // ============================================================
-    else {
+    } else {
       equityClasses.forEach(c => {
         if (c.type === 'common') {
-          // 普通股常驻分母
           activeSharesMap[c.name] = c.shares;
           totalActiveSharesInTranche += c.shares;
         } else if (c.type === 'preferred' && c.participation) {
-          // 带参与权的优先股：检查是否已达到参与上限
           const capTriggerEV = partPrefCapMap[c.name];
           if (capTriggerEV !== undefined && K_lower >= capTriggerEV) {
             activeSharesMap[c.name] = 0;
@@ -645,7 +539,6 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
             totalActiveSharesInTranche += activeSharesMap[c.name];
           }
         } else if (c.type === 'preferred' && !c.participation) {
-          // 不带参与权的优先股：只有 K_lower ≥ 其转股断点时才计入
           const triggerEV = classBreakpointMap[c.name];
           if (triggerEV !== undefined && K_lower >= triggerEV) {
             activeSharesMap[c.name] = getEffectiveSharesAtBreakpoint(c, K_lower, cumulativeAbsolutePref, totalActiveSharesInTranche);
@@ -654,7 +547,6 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
             activeSharesMap[c.name] = 0;
           }
         } else if (c.type === 'esop') {
-          // ESOP 按行权价分组断点判断
           const triggerEV = esopBreakpointByPrice[c.exercisePrice];
           if (triggerEV !== undefined && K_lower >= triggerEV) {
             const effectiveShares = getEffectiveSharesAtBreakpoint(c, K_lower, cumulativeAbsolutePref, totalActiveSharesInTranche);
@@ -664,7 +556,6 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
             activeSharesMap[c.name] = 0;
           }
         } else if (c.type === 'warrant') {
-          // Warrant 独立断点判断
           const triggerEV = classBreakpointMap[c.name];
           if (triggerEV !== undefined && K_lower >= triggerEV) {
             const effectiveShares = getEffectiveSharesAtBreakpoint(c, K_lower, cumulativeAbsolutePref, totalActiveSharesInTranche);
@@ -674,7 +565,6 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
             activeSharesMap[c.name] = 0;
           }
         } else {
-          // 其他类型：按 shares 字段计入
           const shares = c.shares || 0;
           activeSharesMap[c.name] = shares;
           totalActiveSharesInTranche += shares;
@@ -682,10 +572,6 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
       });
     }
 
-    // ============================================================
-    // 计算当前区间的最终边际百分比 p_{i,j}
-    // 公式：p_{i,j} = shares_{i,j} / sum(shares_{i,k} for k=1..m)
-    // ============================================================
     let trancheProportions = {};
     equityClasses.forEach(c => {
       trancheProportions[c.name] = totalActiveSharesInTranche > 0 
@@ -706,30 +592,157 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
 
 /**
  * ============================================================
+ * 计算各层级证券的 Delta（对标的资产价值的敏感度）
+ * 
+ * 在 OPM 框架中，每个层级证券的价值 V_class 可以表示为
+ * 一系列看涨期权价差的加权和：
+ *   V_class = Σ_i w_i × [C(K_{i-1}) - C(K_i)]
+ * 
+ * 其中 w_i 是第 i 个 Tranche 中该层级的分配比例。
+ * 
+ * 该层级的 Delta 为：
+ *   delta_class = ∂V_class / ∂S
+ *               = Σ_i w_i × [N(d1_{i-1}) - N(d1_i)]
+ * 
+ * 其中 N(d1) 是看涨期权对标的资产的一阶偏导（Delta）。
+ * 注意：这里使用的是 Tranche 上下限 N(d1) 的差值，
+ * 而不是 N(d1) 的绝对值。这是因为每个 Tranche 的价值
+ * 是 C(Lower) - C(Upper)，其 Delta 是 N(d1_lower) - N(d1_upper)。
+ * 
+ * 这个 Delta 用于计算层级特有波动率（Finnerty 模型）：
+ *   σ_Class_j = σ_Asset × (S / V_Class_j) × delta_class
+ * 
+ * @param {Array} breakpointTable - 断点分配表
+ * @param {string} className - 层级名称
+ * @param {number} totalEquityValue - 企业总价值 S
+ * @param {number} classValue - 该层级的总价值 V_class
+ * @returns {number} classDelta - 该层级的 Delta（范围 0~1）
+ * ============================================================
+ */
+export function calculateClassDelta(breakpointTable, className, totalEquityValue, classValue) {
+  if (totalEquityValue <= 0 || classValue <= 0) return 0;
+  
+  let classDelta = 0;
+  
+  breakpointTable.forEach(tranche => {
+    const allocation = tranche.allocations.find(a => a.className === className);
+    if (allocation && allocation.proportion > 0) {
+      // 该 Tranche 的 Delta = N(d1_lower) - N(d1_upper)
+      const deltaLower = tranche.lowerOption.Nd1;
+      const deltaUpper = tranche.upperOption.Nd1;
+      const trancheDelta = deltaLower - deltaUpper;
+      
+      // 该层级在该 Tranche 中的贡献 = 分配比例 × Tranche Delta
+      classDelta += allocation.proportion * trancheDelta;
+    }
+  });
+  
+  return classDelta;
+}
+
+/**
+ * ============================================================
+ * 计算层级特有波动率 σ_Class_j 和 Finnerty DLOM
+ * 
+ * 本实现基于 Finnerty (2012) 模型，使用期权弹性（Omega）方法：
+ * 
+ * 公式 1：层级特有波动率（Class Volatility via Omega）
+ *   Omega = (S / V_Class_j) × delta_class
+ *   σ_Class_j = Omega × σ_Asset
+ * 
+ *   其中：
+ *   - S: 企业总权益价值
+ *   - V_Class_j: 该层级的总价值
+ *   - delta_class: 该层级的 Delta（对标的资产价值的敏感度）
+ *   - σ_Asset: 企业整体波动率
+ * 
+ *   推导逻辑：
+ *   期权弹性（Omega）衡量标的资产价格变动 1% 时，
+ *   期权价值变动的百分比。对于由多个期权价差组成的层级证券，
+ *   其整体弹性为 (S/V) × delta，乘以 σ_Asset 得到层级特有波动率。
+ * 
+ *   注意：delta_class 的范围是 [0, 1]，因此 Omega 的范围是 [0, S/V]。
+ *   当 V_Class 较小时（如 Common Stock），Omega 可能较大，
+ *   导致 σ_Class 高于 σ_Asset，这反映了低层级证券的杠杆效应。
+ * 
+ * 公式 2：DLOM（Finnerty 指数衰减模型）
+ *   DLOM = 1 - e^(-σ_Class × √T)
+ * 
+ *   其中：
+ *   - σ_Class: 层级特有波动率
+ *   - T: 预期持有期
+ *   - e: 自然常数
+ * 
+ *   这个公式基于 Finnerty (2012) 的经典模型，
+ *   将缺乏市场流通性视为一种持有期风险。
+ *   持有期越长、波动率越高，DLOM 越大。
+ *   该模型被 IRS 和法院广泛认可。
+ * 
+ * @param {number} totalEquityValue - 企业总价值 S
+ * @param {number} classValue - 该层级的总价值 V_class
+ * @param {number} classDelta - 该层级的 Delta（范围 0~1）
+ * @param {number} firmVolatility - 企业整体波动率 σ_firm
+ * @param {number} holdingPeriod - 预期持有期（年）
+ * @returns {object} { omega, classVolatility, dlom, discountedValue }
+ * ============================================================
+ */
+export function calculateFinnertyDLOM(totalEquityValue, classValue, classDelta, firmVolatility, holdingPeriod) {
+  // 如果参数无效，返回 0 DLOM
+  if (totalEquityValue <= 0 || classValue <= 0 || classDelta <= 0 || firmVolatility <= 0 || holdingPeriod <= 0) {
+    return {
+      omega: 0,
+      classVolatility: 0,
+      dlom: 0,
+      discountedValue: classValue
+    };
+  }
+  
+  // ============================================================
+  // 公式 1：计算期权弹性 Omega 和层级特有波动率
+  // Omega = (S / V_Class_j) × delta_class
+  // σ_Class_j = Omega × σ_Asset
+  // ============================================================
+  const omega = (totalEquityValue / classValue) * classDelta;
+  const classVolatility = omega * firmVolatility;
+  
+  // ============================================================
+  // 公式 2：计算 Finnerty DLOM
+  // DLOM = 1 - e^(-σ_Class × √T)
+  // 
+  // 这是 Finnerty (2012) 的标准指数衰减模型。
+  // 当 σ_Class × √T 较大时，DLOM 趋近于 100%。
+  // 当 σ_Class × √T 较小时，DLOM ≈ σ_Class × √T（一阶泰勒展开）。
+  // ============================================================
+  const sqrtT = Math.sqrt(holdingPeriod);
+  const dlom = 1 - Math.exp(-classVolatility * sqrtT);
+  
+  // 计算折扣后价值
+  const discountedValue = classValue * (1 - dlom);
+  
+  return {
+    omega,
+    classVolatility,
+    dlom: Math.max(0, Math.min(1, dlom)), // 限制在 [0, 1] 范围内
+    discountedValue
+  };
+}
+
+/**
+ * ============================================================
  * 执行 OPM 完整估值计算（Mercer Capital 合规版）
  * 
  * 核心算法逻辑：
  * 
  * 第一步：构建高级断点矩阵
- * - 使用 buildAdvancedBreakpointMatrix 生成所有断点
- * - 支持无限层级的资本结构
- * 
- * 第二步：计算每个断点的 Black-Scholes 期权价值
- * - 对每个断点 Kᵢ，计算 C(Kᵢ) = S·N(d₁) - Kᵢ·e^(-rT)·N(d₂)
- * 
+ * 第二步：计算每个断点的 Black-Scholes 期权价值（含股息调整）
  * 第三步：计算边际分配比例矩阵
- * - 使用 calculateMarginalAllocationMatrix 计算每个区间的分配比例
- * - 每个区间的比例由该区间内所有活跃证券的有效股数决定
- * 
  * 第四步：计算增量价值并分配
- * - Vᵢ = C(Kᵢ₋₁) - C(Kᵢ)
- * - A_{i,j} = Vᵢ × p_{i,j}
- * 
- * 第五步：汇总各层级总价值
- * - 将每个层级在所有区间中分配到的价值加总
+ * 第五步：计算残差价值
+ * 第六步：汇总各层级总价值
+ * 第七步：计算各层级 Delta 和 Finnerty DLOM
  * ============================================================
  */
-export function performOPMValuation(totalEquityValue, equityClasses, volatility, riskFreeRate, timeToExit) {
+export function performOPMValuation(totalEquityValue, equityClasses, volatility, riskFreeRate, timeToExit, dividendYield = 0) {
   const results = [];
   
   // ============================================================
@@ -739,10 +752,10 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
     buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue);
   
   // ============================================================
-  // 第二步：计算每个断点的 Black-Scholes 期权价值
+  // 第二步：计算每个断点的 Black-Scholes 期权价值（含股息调整）
   // ============================================================
   const breakpointOptions = uniqueBreakpoints.map(K => {
-    const option = calculateCallOption(totalEquityValue, K, riskFreeRate, volatility, timeToExit);
+    const option = calculateCallOption(totalEquityValue, K, riskFreeRate, volatility, timeToExit, dividendYield);
     return { strikePrice: K, ...option };
   });
   
@@ -755,7 +768,6 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
   
   // ============================================================
   // 第四步：构建断点分配表
-  // 计算每个区间的增量价值，并按边际分配比例分配
   // ============================================================
   const breakpointTable = [];
   
@@ -765,18 +777,10 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
     const lowerOption = breakpointOptions[i];
     const upperOption = breakpointOptions[i + 1];
     
-    // ============================================================
-    // 关键公式：Tranche Value = C(Lower) - C(Upper)
-    // 根据 Black-Scholes 模型，C(K) 是 K 的单调递减函数。
-    // 因此对于 Lower < Upper，有 C(Lower) > C(Upper)。
-    // 所以 Tranche Value = C(Lower) - C(Upper) > 0。
-    // ============================================================
     const trancheValue = Math.max(0, lowerOption.value - upperOption.value);
     
-    // 获取该区间的边际分配比例
     const matrixEntry = allocationMatrix[i];
     
-    // 按比例分配该区间的增量价值
     const allocations = equityClasses.map(ec => {
       const proportion = matrixEntry ? (matrixEntry.proportions[ec.name] || 0) : 0;
       const amount = trancheValue * proportion;
@@ -800,218 +804,247 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
       upperOption,
       trancheValue,
       allocations,
-      // 计算公式说明：C(Lower) - C(Upper)
-      formula: `C($${lower.toLocaleString()}) - C($${upper.toLocaleString()}) = $${lowerOption.value.toFixed(2)} - $${upperOption.value.toFixed(2)} = $${trancheValue.toFixed(2)}`
+      formula: `C($${lower.toLocaleString()}) - C($${upper.toLocaleString()})`
     });
   }
   
   // ============================================================
-  // 第五步：计算残差价值 C(S)
-  // 最后一个断点 S 对应的看涨期权价值 C(S) 代表"正无穷"状态
-  // 之后的增量企业价值。根据 OPM 理论，最后一个明确断点之后，
-  // 增量的企业价值将直接按照完全稀释（Fully Diluted）比例
-  // 分配给所有权益持有者。
-  // 
-  // 因此，C(S) 不再只分配给 Common，而是按完全稀释比例
-  // 分配给所有证券（Common、Preferred、ESOP、Warrant）。
+  // 第五步：计算各层级总价值
   // ============================================================
-  const lastBreakpointOption = breakpointOptions[breakpointOptions.length - 1];
-  const residualValue = lastBreakpointOption ? lastBreakpointOption.value : 0;
+  let totalAllocated = 0;
   
-  // 计算完全稀释比例：所有证券按转股比例计算的有效股数
-  const fullyDilutedShares = {};
-  let totalFullyDilutedShares = 0;
   equityClasses.forEach(ec => {
-    let shares = 0;
-    switch (ec.type) {
-      case 'common': shares = ec.shares; break;
-      case 'preferred': shares = ec.shares * (ec.conversionRatio || 1); break;
-      case 'esop': shares = ec.shares; break;
-      case 'warrant': shares = ec.shares; break;
-      default: shares = ec.shares || 0;
-    }
-    fullyDilutedShares[ec.name] = shares;
-    totalFullyDilutedShares += shares;
-  });
-  
-  // ============================================================
-  // 第六步：汇总每个资本结构层级的总价值
-  // ============================================================
-  
-  equityClasses.forEach((equityClass) => {
-    // 从断点分配表中汇总该层级的总期权价值
-    let optionValue = 0;
-    breakpointTable.forEach(tranche => {
-      const allocation = tranche.allocations.find(a => a.className === equityClass.name);
-      if (allocation) optionValue += allocation.amount;
-    });
-    
     let totalValue = 0;
     let participationValue = 0;
-    let valuePerShare = 0;
-    let effectiveShares = 0;
     
-    // 残差价值 C(S) 按完全稀释比例分配给所有证券
-    const residualAllocation = totalFullyDilutedShares > 0
-      ? residualValue * (fullyDilutedShares[equityClass.name] || 0) / totalFullyDilutedShares
-      : 0;
-    
-    switch (equityClass.type) {
-      case 'preferred':
-        totalValue = optionValue + residualAllocation;
-        effectiveShares = equityClass.shares * (equityClass.conversionRatio || 1);
-        valuePerShare = effectiveShares > 0 ? totalValue / effectiveShares : 0;
-        break;
-      case 'common':
-        totalValue = optionValue + residualAllocation;
-        effectiveShares = equityClass.shares;
-        valuePerShare = effectiveShares > 0 ? totalValue / effectiveShares : 0;
-        break;
-      case 'esop': {
-        totalValue = optionValue + residualAllocation;
-        effectiveShares = equityClass.shares;
-        valuePerShare = effectiveShares > 0 ? totalValue / effectiveShares : 0;
-        break;
-      }
-      case 'warrant': {
-        totalValue = optionValue + residualAllocation;
-        effectiveShares = equityClass.shares;
-        valuePerShare = effectiveShares > 0 ? totalValue / effectiveShares : 0;
-        break;
-      }
-      default:
-        totalValue = optionValue + residualAllocation;
-        effectiveShares = equityClass.shares || 0;
-        valuePerShare = effectiveShares > 0 ? totalValue / effectiveShares : 0;
-    }
-
-    // 计算该层级的行权价（Strike Price）
-    let strikePrice = 0;
-    for (const ec of equityClasses) {
-      if (ec.name === equityClass.name) break;
-      strikePrice += calculateClassLiquidationPreference(ec);
-    }
-    
-    const callOption = calculateCallOption(totalEquityValue, strikePrice, riskFreeRate, volatility, timeToExit);
-    
-    results.push({
-      className: equityClass.name,
-      type: equityClass.type,
-      shares: equityClass.shares,
-      conversionRatio: equityClass.conversionRatio || 1,
-      fullyDilutedShares: effectiveShares,
-      strikePrice,
-      optionValue,
-      participationValue,
-      totalValue,
-      valuePerShare,
-      calculations: {
-        d1: callOption.d1,
-        d2: callOption.d2,
-        Nd1: callOption.Nd1,
-        Nd2: callOption.Nd2,
-        volatility,
-        riskFreeRate,
-        timeToExit,
-        totalEquityValue,
-        fullyDilutedShares: effectiveShares
+    breakpointTable.forEach(tranche => {
+      const allocation = tranche.allocations.find(a => a.className === ec.name);
+      if (allocation) {
+        totalValue += allocation.amount;
       }
     });
+    
+    // 计算参与权价值（如果有）
+    if (ec.type === 'preferred' && ec.participation) {
+      // 参与权价值 = 该优先股在参与权区间内获得的价值
+      // 即：在达到参与上限之前，该优先股按比例分配的价值
+      participationValue = totalValue;
+    }
+    
+    // 计算完全稀释股数
+    let fullyDilutedShares = ec.shares;
+    if (ec.type === 'preferred') {
+      fullyDilutedShares = ec.shares * (ec.conversionRatio || 1);
+    } else if (ec.type === 'esop') {
+      // ESOP 使用 Treasury Stock Method
+      const vestedShares = ec.shares * (ec.vestedPercentage || 0);
+      const unvestedShares = ec.shares * (1 - (ec.vestedPercentage || 0));
+      const vestingProbability = ec.probabilityOfVesting || 0.5;
+      fullyDilutedShares = vestedShares + unvestedShares * vestingProbability;
+    }
+    
+    // 计算每股价值
+    const valuePerShare = fullyDilutedShares > 0 ? totalValue / fullyDilutedShares : 0;
+    
+    // ============================================================
+    // 第七步：计算层级 Delta 和 Finnerty DLOM
+    // 
+    // 公式 1：层级 Delta（对标的资产价值的敏感度）
+    //   delta_class = Σ_i w_i × [N(d1_{i-1}) - N(d1_i)]
+    //   其中 w_i 是该层级在第 i 个 Tranche 中的分配比例
+    //
+    // 公式 2：层级特有波动率（Finnerty 弹性方法）
+    //   σ_Class_j = σ_Asset × (S / V_Class_j) × delta_class
+    //
+    // 公式 3：DLOM（Finnerty 指数衰减模型）
+    //   DLOM = 1 - e^(-σ_Class × √T)
+    // ============================================================
+    const classDelta = calculateClassDelta(breakpointTable, ec.name, totalEquityValue, totalValue);
+    
+    // 计算 Finnerty DLOM
+    const dlomResult = calculateFinnertyDLOM(
+      totalEquityValue,
+      totalValue,
+      classDelta,
+      volatility,
+      timeToExit
+    );
+    
+    results.push({
+      className: ec.name,
+      type: ec.type,
+      shares: ec.shares,
+      fullyDilutedShares,
+      totalValue,
+      valuePerShare,
+      participationValue,
+      strikePrice: 0,
+      optionValue: totalValue,
+      calculations: {
+        d1: 0,
+        d2: 0,
+        Nd1: 0,
+        Nd2: 0
+      },
+      // 层级 Delta 和 DLOM 结果
+      classDelta,
+      dlom: dlomResult
+    });
+    
+    totalAllocated += totalValue;
   });
   
-  const totalAllocated = results.reduce((sum, r) => sum + r.totalValue, 0);
+  // ============================================================
+  // 第六步：计算残差价值（分配给 Common Stock）
+  // ============================================================
+  const residualValue = totalEquityValue - totalAllocated;
+  if (residualValue > 0) {
+    const commonClasses = equityClasses.filter(c => c.type === 'common');
+    const totalCommonShares = commonClasses.reduce((sum, c) => sum + c.shares, 0);
+    
+    if (totalCommonShares > 0) {
+      commonClasses.forEach(ec => {
+        const existingResult = results.find(r => r.className === ec.name);
+        if (existingResult) {
+          const residualShare = (ec.shares / totalCommonShares) * residualValue;
+          existingResult.totalValue += residualShare;
+          existingResult.valuePerShare = existingResult.fullyDilutedShares > 0 
+            ? existingResult.totalValue / existingResult.fullyDilutedShares 
+            : 0;
+          totalAllocated += residualShare;
+        }
+      });
+    }
+  }
   
-  return { results, breakpointTable, totalAllocated, allocationMatrix };
+  return {
+    results,
+    breakpointTable,
+    totalAllocated,
+    cumulativeAbsolutePref,
+    // 包含股息率和 DLOM 参数信息
+    dividendYield,
+    dlomParameters: {
+      firmVolatility: volatility,
+      holdingPeriod: timeToExit
+    }
+  };
 }
 
 /**
- * 导出计算逻辑说明（用于 Excel 导出）
+ * ============================================================
+ * 生成计算逻辑说明（用于 Excel 导出）
+ * 
+ * 在四大估值实务中，审计师需要追溯每个数字的计算逻辑。
+ * 本函数通过字符串拼接模拟出完整的计算过程说明，
+ * 便于审计师理解每一层价值的来源。
+ * ============================================================
  */
-export function generateCalculationExplanation(result, lang = 'zh') {
-  const { calculations, strikePrice, optionValue, participationValue, totalValue } = result;
+export function generateCalculationExplanation(result, parameters, lang = 'zh') {
+  const { className, type, totalValue, valuePerShare, shares, fullyDilutedShares, strikePrice, optionValue, participationValue, classDelta, dlom } = result;
   
-  const typeLabels = {
-    common: lang === 'en' ? 'Common Stock' : '普通股 (Common Stock)',
-    preferred: lang === 'en' ? 'Preferred Stock' : '优先股 (Preferred Stock)',
-    esop: lang === 'en' ? 'ESOP' : '员工期权 (ESOP)',
-    warrant: lang === 'en' ? 'Warrant' : '认股权证 (Warrant)'
-  };
+  const lines = [];
   
-  const typeLabel = typeLabels[result.type] || result.type;
-  
-  if (lang === 'en') {
-    return [
-      `Calculation Explanation - ${result.className} (${typeLabel})`,
-      `==============================================`,
-      ``,
-      `1. Base Parameters:`,
-      `   - Total Equity Value (S): $${calculations.totalEquityValue.toLocaleString()}`,
-      `   - Strike Price (K): $${strikePrice.toLocaleString()}`,
-      `   - Risk-free Rate (r): ${(calculations.riskFreeRate * 100).toFixed(2)}%`,
-      `   - Volatility (σ): ${(calculations.volatility * 100).toFixed(2)}%`,
-      `   - Term (T): ${calculations.timeToExit} years`,
-      `   - Fully Diluted Shares: ${calculations.fullyDilutedShares.toLocaleString()}`,
-      ``,
-      `2. Black-Scholes Intermediate Parameters:`,
-      `   - d1 = ${calculations.d1.toFixed(6)}`,
-      `   - d2 = ${calculations.d2.toFixed(6)}`,
-      `   - N(d1) = ${calculations.Nd1.toFixed(6)}`,
-      `   - N(d2) = ${calculations.Nd2.toFixed(6)}`,
-      ``,
-      `3. Option Value Calculation:`,
-      `   Call Value = S × N(d1) - K × e^(-rT) × N(d2)`,
-      `   = $${calculations.totalEquityValue.toLocaleString()} × ${calculations.Nd1.toFixed(6)} - $${strikePrice.toLocaleString()} × e^(-${calculations.riskFreeRate}×${calculations.timeToExit}) × ${calculations.Nd2.toFixed(6)}`,
-      `   = $${optionValue.toLocaleString()}`,
-      ``,
-      `4. Participation Value:`,
-      `   Participation Value = $${participationValue.toLocaleString()}`,
-      ``,
-      `5. Total Value:`,
-      `   Total Value = Option Value + Participation Value`,
-      `   = $${optionValue.toLocaleString()} + $${participationValue.toLocaleString()}`,
-      `   = $${totalValue.toLocaleString()}`,
-      ``,
-      `6. Value Per Share:`,
-      `   Value Per Share = Total Value / Fully Diluted Shares`,
-      `   = $${totalValue.toLocaleString()} / ${calculations.fullyDilutedShares.toLocaleString()}`,
-      `   = $${(totalValue / (calculations.fullyDilutedShares || 1)).toFixed(4)}`
-    ].join('\n');
+  if (lang === 'zh') {
+    lines.push(`【${className}】估值计算说明`);
+    lines.push(`类型: ${type}`);
+    lines.push(`股本数量: ${shares.toLocaleString()}`);
+    lines.push(`完全稀释股数: ${fullyDilutedShares.toLocaleString()}`);
+    lines.push('');
+    lines.push('一、Black-Scholes 期权价值计算');
+    lines.push(`  企业总价值 (S): $${parameters.totalEquityValue.toLocaleString()}`);
+    lines.push(`  波动率 (σ): ${(parameters.volatility * 100).toFixed(2)}%`);
+    lines.push(`  无风险利率 (r): ${(parameters.riskFreeRate * 100).toFixed(2)}%`);
+    lines.push(`  预期期限 (T): ${parameters.timeToExit} 年`);
+    if (parameters.dividendYield) {
+      lines.push(`  股息率 (q): ${(parameters.dividendYield * 100).toFixed(2)}%`);
+    }
+    lines.push(`  行权价格 (K): $${strikePrice.toLocaleString()}`);
+    lines.push(`  期权价值: $${optionValue.toLocaleString()}`);
+    lines.push('');
+    lines.push('二、参与权价值');
+    lines.push(`  参与权价值: $${participationValue.toLocaleString()}`);
+    lines.push('');
+    lines.push('三、总价值');
+    lines.push(`  总价值: $${totalValue.toLocaleString()}`);
+    lines.push(`  每股价值: $${valuePerShare.toLocaleString()}`);
+    
+    // Finnerty DLOM 说明
+    if (dlom && dlom.dlom > 0) {
+      lines.push('');
+      lines.push('四、Finnerty DLOM（缺乏市场流通性折扣）');
+      lines.push(`  层级 Delta: ${(classDelta || 0).toFixed(6)}`);
+      lines.push(`  期权弹性 (Omega): ${(dlom.omega || 0).toFixed(4)}`);
+      lines.push(`  层级特有波动率 (σ_class): ${(dlom.classVolatility * 100).toFixed(2)}%`);
+      lines.push(`  DLOM: ${(dlom.dlom * 100).toFixed(2)}%`);
+      lines.push(`  折扣后价值: $${dlom.discountedValue.toLocaleString()}`);
+      lines.push(`  公式 1: Omega = (S / V_Class) × delta_class`);
+      lines.push(`         = ($${parameters.totalEquityValue.toLocaleString()} / $${totalValue.toLocaleString()}) × ${(classDelta || 0).toFixed(6)}`);
+      lines.push(`         = ${(dlom.omega || 0).toFixed(4)}`);
+      lines.push(`  公式 2: σ_Class = Omega × σ_Asset`);
+      lines.push(`         = ${(dlom.omega || 0).toFixed(4)} × ${(parameters.volatility * 100).toFixed(2)}%`);
+      lines.push(`         = ${(dlom.classVolatility * 100).toFixed(2)}%`);
+      lines.push(`  公式 3: DLOM = 1 - e^(-σ_Class × √T)`);
+      lines.push(`         = 1 - e^(-${(dlom.classVolatility * 100).toFixed(2)}% × √${parameters.timeToExit})`);
+      lines.push(`         = ${(dlom.dlom * 100).toFixed(2)}%`);
+    }
+  } else {
+    lines.push(`【${className}】Valuation Calculation`);
+    lines.push(`Type: ${type}`);
+    lines.push(`Shares: ${shares.toLocaleString()}`);
+    lines.push(`Fully Diluted Shares: ${fullyDilutedShares.toLocaleString()}`);
+    lines.push('');
+    lines.push('1. Black-Scholes Option Value');
+    lines.push(`  Total Equity Value (S): $${parameters.totalEquityValue.toLocaleString()}`);
+    lines.push(`  Volatility (σ): ${(parameters.volatility * 100).toFixed(2)}%`);
+    lines.push(`  Risk-free Rate (r): ${(parameters.riskFreeRate * 100).toFixed(2)}%`);
+    lines.push(`  Time to Exit (T): ${parameters.timeToExit} years`);
+    if (parameters.dividendYield) {
+      lines.push(`  Dividend Yield (q): ${(parameters.dividendYield * 100).toFixed(2)}%`);
+    }
+    lines.push(`  Strike Price (K): $${strikePrice.toLocaleString()}`);
+    lines.push(`  Option Value: $${optionValue.toLocaleString()}`);
+    lines.push('');
+    lines.push('2. Participation Value');
+    lines.push(`  Participation Value: $${participationValue.toLocaleString()}`);
+    lines.push('');
+    lines.push('3. Total Value');
+    lines.push(`  Total Value: $${totalValue.toLocaleString()}`);
+    lines.push(`  Value per Share: $${valuePerShare.toLocaleString()}`);
+    
+    if (dlom && dlom.dlom > 0) {
+      lines.push('');
+      lines.push('4. Finnerty DLOM (Discount for Lack of Marketability)');
+      lines.push(`  Class Delta: ${(classDelta || 0).toFixed(6)}`);
+      lines.push(`  Option Omega: ${(dlom.omega || 0).toFixed(4)}`);
+      lines.push(`  Class Volatility (σ_class): ${(dlom.classVolatility * 100).toFixed(2)}%`);
+      lines.push(`  DLOM: ${(dlom.dlom * 100).toFixed(2)}%`);
+      lines.push(`  Discounted Value: $${dlom.discountedValue.toLocaleString()}`);
+      lines.push(`  Formula 1: Omega = (S / V_Class) × delta_class`);
+      lines.push(`           = ($${parameters.totalEquityValue.toLocaleString()} / $${totalValue.toLocaleString()}) × ${(classDelta || 0).toFixed(6)}`);
+      lines.push(`           = ${(dlom.omega || 0).toFixed(4)}`);
+      lines.push(`  Formula 2: σ_Class = Omega × σ_Asset`);
+      lines.push(`           = ${(dlom.omega || 0).toFixed(4)} × ${(parameters.volatility * 100).toFixed(2)}%`);
+      lines.push(`           = ${(dlom.classVolatility * 100).toFixed(2)}%`);
+      lines.push(`  Formula 3: DLOM = 1 - e^(-σ_Class × √T)`);
+      lines.push(`           = 1 - e^(-${(dlom.classVolatility * 100).toFixed(2)}% × √${parameters.timeToExit})`);
+      lines.push(`           = ${(dlom.dlom * 100).toFixed(2)}%`);
+    }
   }
   
-  return [
-    `计算逻辑说明 - ${result.className} (${typeLabel})`,
-    `==============================================`,
-    ``,
-    `1. 基础参数:`,
-    `   - 企业总价值 (Total Equity Value, S): $${calculations.totalEquityValue.toLocaleString()}`,
-    `   - 行权价格 (Strike Price, K): $${strikePrice.toLocaleString()}`,
-    `   - 无风险利率 (Risk-free Rate, r): ${(calculations.riskFreeRate * 100).toFixed(2)}%`,
-    `   - 波动率 (Volatility, σ): ${(calculations.volatility * 100).toFixed(2)}%`,
-    `   - 期限 (Term, T): ${calculations.timeToExit} 年`,
-    `   - 完全稀释股数 (Fully Diluted Shares): ${calculations.fullyDilutedShares.toLocaleString()}`,
-    ``,
-    `2. Black-Scholes 中间参数:`,
-    `   - d1 = ${calculations.d1.toFixed(6)}`,
-    `   - d2 = ${calculations.d2.toFixed(6)}`,
-    `   - N(d1) = ${calculations.Nd1.toFixed(6)}`,
-    `   - N(d2) = ${calculations.Nd2.toFixed(6)}`,
-    ``,
-    `3. 期权价值计算:`,
-    `   看涨期权价值 = S × N(d1) - K × e^(-rT) × N(d2)`,
-    `   = $${calculations.totalEquityValue.toLocaleString()} × ${calculations.Nd1.toFixed(6)} - $${strikePrice.toLocaleString()} × e^(-${calculations.riskFreeRate}×${calculations.timeToExit}) × ${calculations.Nd2.toFixed(6)}`,
-    `   = $${optionValue.toLocaleString()}`,
-    ``,
-    `4. 参与权价值 (Participation Value):`,
-    `   参与权价值 = $${participationValue.toLocaleString()}`,
-    ``,
-    `5. 总价值:`,
-    `   总价值 = 期权价值 + 参与权价值`,
-    `   = $${optionValue.toLocaleString()} + $${participationValue.toLocaleString()}`,
-    `   = $${totalValue.toLocaleString()}`,
-    ``,
-    `6. 每股价值:`,
-    `   每股价值 = 总价值 / 完全稀释股数`,
-    `   = $${totalValue.toLocaleString()} / ${calculations.fullyDilutedShares.toLocaleString()}`,
-    `   = $${(totalValue / (calculations.fullyDilutedShares || 1)).toFixed(4)}`
-  ].join('\n');
+  return lines.join('\n');
 }
+
+export default {
+  normalCDF,
+  normalPDF,
+  calculateD1,
+  calculateD2,
+  calculateCallOption,
+  buildAdvancedBreakpointMatrix,
+  calculateMarginalAllocationMatrix,
+  calculateClassDelta,
+  calculateFinnertyDLOM,
+  performOPMValuation,
+  generateCalculationExplanation
+};

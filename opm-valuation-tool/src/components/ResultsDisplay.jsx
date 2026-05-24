@@ -5,32 +5,24 @@
  * 1. 断点分配详情表（Breakpoint Allocation Table）- 展示每一层断点的详细参数
  *    每一行明确显示该比例（Pro-rata）具体归属于哪个股权类别
  *    点击断点行高亮显示该层分配给了哪些 Class
- * 2. 各层级估值结果汇总 - 与断点分配表数据完全同步
- * 3. Black-Scholes 中间参数（d1, d2, N(d1), N(d2)）
+ * 2. 权益价值分配汇总（OPM Fair Value Summary Table）
+ *    展示各层级的核心总价值、股本数量、初始每股价值
+ *    当 isDLOMEnabled 时，额外展示 Class 波动率、DLOM 比例、折价后每股参考价
  * 
  * 四大审计实务要求：
  * - 断点分配表必须完整展示每一层的分配逻辑
- * - 鼠标悬停显示计算公式
  * - 汇总行验证分配总额等于 Total Equity Value
- * - 估值结果表中的最终数值 = 断点分配表中各类别在所有层级分配金额的纵向加总
+ * - 权益价值分配汇总中 Row 1 加总严格等于 Total Equity Value S（价值守恒）
+ * - DLOM 行属于独立流动性风险扣减，不参与全局价值守恒校验
  */
 
 import { useState } from 'react';
-import { BarChart3, Info, Eye, EyeOff, HelpCircle } from 'lucide-react';
+import { BarChart3, HelpCircle } from 'lucide-react';
 import { t } from '../utils/i18n';
 
-function ResultsDisplay({ results, parameters, breakpointTable, totalAllocated, lang }) {
-  const [showDetails, setShowDetails] = useState({});
-  const [showAllCalculations, setShowAllCalculations] = useState(false);
+function ResultsDisplay({ results, parameters, breakpointTable, totalAllocated, lang, isDLOMEnabled }) {
   const [hoveredTranche, setHoveredTranche] = useState(null);
   const [selectedTranche, setSelectedTranche] = useState(null);
-
-  const toggleDetails = (className) => {
-    setShowDetails(prev => ({
-      ...prev,
-      [className]: !prev[className]
-    }));
-  };
 
   const formatCurrency = (value) => {
     return new Intl.NumberFormat('en-US', {
@@ -294,245 +286,175 @@ function ResultsDisplay({ results, parameters, breakpointTable, totalAllocated, 
         )}
       </div>
 
-      {/* 各层级估值结果汇总 */}
+      {/* ============================================================
+          权益价值分配汇总 (OPM Fair Value Summary Table)
+          
+          展示各层级的核心公允价值指标。
+          
+          当 isDLOMEnabled === false（默认核心模式）：
+          - Row 1: 核心总价值 (Total Value) - 各层级在所有 Tranche 中分配金额的纵向加总
+          - Row 2: 股本数量 (Shares) - 各层级已发行/已行权股本
+          - Row 3: 初始每股价值 (Per-Share) - 总价值 ÷ 股本数量
+          
+          当 isDLOMEnabled === true（扩展 DLOM 模式）：
+          - Row 4: Class 波动率 (Vol) - 基于 Finnerty 模型的层级特有波动率
+          - Row 5: DLOM 比例 (%) - 缺乏市场流通性折扣率
+          - Row 6: 折价后每股参考价 (After DLOM) - 初始每股价值 × (1 - DLOM%)
+          
+          审计提示：
+          - Row 1 加总严格等于 Total Equity Value S（价值守恒）
+          - Row 4-6 属于独立流动性风险扣减，不参与全局价值守恒校验
+          ============================================================ */}
       <div className="bg-white/80 backdrop-blur-xl rounded-2xl shadow-lg border border-apple-gray-200 p-6">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center space-x-3">
             <BarChart3 className="w-6 h-6 text-apple-blue-500" />
-            <h2 className="text-xl font-semibold text-apple-gray-900">{t('results', {}, lang)}</h2>
+            <h2 className="text-xl font-semibold text-apple-gray-900">
+              {lang === 'en' ? 'OPM Fair Value Summary' : '权益价值分配汇总 (OPM Fair Value Summary)'}
+            </h2>
           </div>
-          
-          <button
-            onClick={() => setShowAllCalculations(!showAllCalculations)}
-            className="px-4 py-2 rounded-xl bg-apple-gray-100 hover:bg-apple-gray-200 text-apple-gray-700 transition-all duration-200 flex items-center space-x-2"
-          >
-            {showAllCalculations ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-            <span className="text-sm font-medium">
-              {showAllCalculations ? t('hideCalcDetails', {}, lang) : t('showCalcDetails', {}, lang)}
-            </span>
-          </button>
         </div>
 
-        {/* 结果表格 */}
+        {/* 审计提示 */}
+        <div className={`mb-6 p-4 rounded-xl border ${
+          isDLOMEnabled 
+            ? 'bg-purple-50 border-purple-200 text-purple-800' 
+            : 'bg-apple-blue-50 border-apple-blue-200 text-apple-blue-800'
+        }`}>
+          <div className="flex items-start space-x-2">
+            <HelpCircle className="w-5 h-5 mt-0.5 flex-shrink-0" />
+            <p className="text-sm leading-relaxed">
+              {isDLOMEnabled
+                ? (lang === 'en'
+                    ? 'This table includes DLOM impact assessment. Rows 1-3 satisfy systematic value conservation (Pre-DLOM). Rows 4-6 represent independent liquidity risk deductions; the post-DLOM per-share reference prices do not participate in global value conservation verification and are for fair value reporting reference only.'
+                    : '本表已开启 DLOM 影响测算。前 3 项指标满足系统性价值守恒（Pre-DLOM）；后 3 项指标属于独立流动性风险扣减，折价后的每股参考价不参与全局价值守恒校验，仅供公允价值申报参考。')
+                : (lang === 'en'
+                    ? 'This table shows Pre-DLOM core fair value. The sum of Row 1 (Total Value) across all classes exactly equals the Total Equity Value S (value conservation).'
+                    : '本表展示 Pre-DLOM 核心公允价值。各 Class 的【1. 核心总价值】加总严格等于企业当前总体权益价值 S（价值守恒）。')
+              }
+            </p>
+          </div>
+        </div>
+
+        {/* 权益价值分配汇总表 */}
         <div className="overflow-x-auto">
-          <table className="w-full">
+          <table className="w-full text-sm">
             <thead>
               <tr className="border-b-2 border-apple-gray-200">
-                <th className="text-left py-3 px-4 text-sm font-semibold text-apple-gray-700">{t('className', {}, lang)}</th>
-                <th className="text-right py-3 px-4 text-sm font-semibold text-apple-gray-700">{t('sharesLabel', {}, lang)}</th>
-                <th className="text-right py-3 px-4 text-sm font-semibold text-apple-gray-700">{t('fullyDiluted', {}, lang)}</th>
-                <th className="text-right py-3 px-4 text-sm font-semibold text-apple-gray-700">{t('totalValueLabel', {}, lang)}</th>
-                <th className="text-right py-3 px-4 text-sm font-semibold text-apple-gray-700">{t('valuePerShare', {}, lang)}</th>
-                <th className="text-center py-3 px-4 text-sm font-semibold text-apple-gray-700">{t('details', {}, lang)}</th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-apple-gray-700 whitespace-nowrap">
+                  {lang === 'en' ? 'Metric' : '财务结算指标'}
+                </th>
+                {results.map((result, rIdx) => (
+                  <th key={rIdx} className="text-center py-3 px-4 text-xs font-semibold text-apple-gray-700 whitespace-nowrap">
+                    <div className="flex flex-col items-center">
+                      <span className="text-[10px] opacity-75">{result.type}</span>
+                      <span className="text-xs">{result.className}</span>
+                    </div>
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {results.map((result, index) => (
-                <tr key={index} className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors">
-                  <td className="py-4 px-4">
-                    <span className="font-medium text-apple-gray-900">{result.className}</span>
-                  </td>
-                  <td className="py-4 px-4 text-right text-apple-gray-700">
-                    {formatNumber(result.shares, 0)}
-                  </td>
-                  <td className="py-4 px-4 text-right text-apple-gray-700">
-                    {formatNumber(result.fullyDilutedShares, 0)}
-                  </td>
-                  <td className="py-4 px-4 text-right font-semibold text-apple-gray-900">
+              {/* Row 1: 核心总价值 (Total Value) */}
+              <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors">
+                <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
+                  {lang === 'en' ? '1. Total Value' : '1. 核心总价值 (Total Value)'}
+                </td>
+                {results.map((result, rIdx) => (
+                  <td key={rIdx} className="py-4 px-4 text-center font-mono font-semibold text-apple-gray-900">
                     {formatCurrency(result.totalValue)}
                   </td>
-                  <td className="py-4 px-4 text-right font-semibold text-green-600">
+                ))}
+              </tr>
+              {/* Row 1 审计验证行：加总 = S */}
+              <tr className="border-b border-apple-gray-100 bg-apple-gray-50/50">
+                <td className="py-2 px-4 text-xs text-apple-gray-500 italic">
+                  {lang === 'en' ? 'Sum check (must equal S):' : '加总校验（应等于 S）:'}
+                </td>
+                <td colSpan={results.length} className="py-2 px-4 text-center text-xs font-mono">
+                  <span className={Math.abs(totalValue - parameters.totalEquityValue) < 1 ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
+                    {formatCurrency(totalValue)}
+                    {Math.abs(totalValue - parameters.totalEquityValue) < 1 ? ' ✓' : ` ≠ ${formatCurrency(parameters.totalEquityValue)}`}
+                  </span>
+                </td>
+              </tr>
+
+              {/* Row 2: 股本数量 (Shares) */}
+              <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors">
+                <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
+                  {lang === 'en' ? '2. Shares' : '2. 股本数量 (Shares)'}
+                </td>
+                {results.map((result, rIdx) => (
+                  <td key={rIdx} className="py-4 px-4 text-center font-mono text-apple-gray-700">
+                    {formatNumber(result.shares, 0)}
+                  </td>
+                ))}
+              </tr>
+
+              {/* Row 3: 初始每股价值 (Per-Share) */}
+              <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors">
+                <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
+                  {lang === 'en' ? '3. Per-Share Value' : '3. 初始每股价值 (Per-Share)'}
+                </td>
+                {results.map((result, rIdx) => (
+                  <td key={rIdx} className="py-4 px-4 text-center font-mono font-bold text-green-600">
                     {formatCurrency(result.valuePerShare)}
                   </td>
-                  <td className="py-4 px-4 text-center">
-                    <button
-                      onClick={() => toggleDetails(result.className)}
-                      className="p-2 hover:bg-apple-blue-100 rounded-lg transition-colors"
-                    >
-                      <Info className="w-5 h-5 text-apple-blue-500" />
-                    </button>
+                ))}
+              </tr>
+
+              {/* DLOM 扩展行（仅当 isDLOMEnabled 时显示） */}
+              {isDLOMEnabled && (
+                <>
+              {/* Row 4: Class 波动率 (Vol) */}
+              <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors">
+                <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
+                  {lang === 'en' ? '4. Class Volatility' : '4. Class 波动率 (Vol)'}
+                </td>
+                {results.map((result, rIdx) => (
+                  <td key={rIdx} className="py-4 px-4 text-center font-mono text-purple-700">
+                    {result.dlom && result.dlom.classVolatility > 0
+                      ? formatPercent(result.dlom.classVolatility)
+                      : '-'}
                   </td>
-                </tr>
-              ))}
+                ))}
+              </tr>
+
+              {/* Row 5: DLOM 比例 (%) */}
+              <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors">
+                <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
+                  {lang === 'en' ? '5. DLOM Rate' : '5. DLOM 比例 (%)'}
+                </td>
+                {results.map((result, rIdx) => (
+                  <td key={rIdx} className="py-4 px-4 text-center font-mono text-red-600">
+                    {result.dlom && result.dlom.dlom > 0
+                      ? formatPercent(result.dlom.dlom)
+                      : '0.00%'}
+                  </td>
+                ))}
+              </tr>
+
+              {/* Row 6: 折价后每股参考价 (After DLOM) */}
+              <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors bg-purple-50/50">
+                <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
+                  {lang === 'en' ? '6. Per-Share After DLOM' : '6. 折价后每股参考价 (After DLOM)'}
+                </td>
+                {results.map((result, rIdx) => {
+                  const afterDLOM = result.dlom && result.dlom.dlom > 0
+                    ? result.valuePerShare * (1 - result.dlom.dlom)
+                    : result.valuePerShare;
+                  return (
+                    <td key={rIdx} className="py-4 px-4 text-center font-mono font-bold text-purple-700">
+                      {formatCurrency(afterDLOM)}
+                    </td>
+                  );
+                })}
+              </tr>
+                </>
+              )}
             </tbody>
           </table>
         </div>
-
-        {/* 详细计算信息 */}
-        {showAllCalculations && (
-          <div className="mt-6 space-y-4">
-            <h3 className="text-lg font-semibold text-apple-gray-900 mb-4">
-              {lang === 'en' ? 'Black-Scholes Calculation Parameters' : 'Black-Scholes 计算参数'}
-            </h3>
-            
-            {results.map((result, index) => (
-              <div key={index} className="bg-apple-gray-50 rounded-xl p-5 border border-apple-gray-200">
-                <h4 className="font-semibold text-apple-gray-900 mb-3">{result.className}</h4>
-                
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div>
-                    <p className="text-xs text-apple-gray-600 mb-1">{lang === 'en' ? 'Strike Price (K)' : '行权价格 (K)'}</p>
-                    <p className="font-mono text-sm font-medium text-apple-gray-900">
-                      {formatCurrency(result.strikePrice)}
-                    </p>
-                  </div>
-                  
-                  <div>
-                    <p className="text-xs text-apple-gray-600 mb-1">{lang === 'en' ? 'Option Value' : '期权价值'}</p>
-                    <p className="font-mono text-sm font-medium text-apple-gray-900">
-                      {formatCurrency(result.optionValue)}
-                    </p>
-                  </div>
-                  
-                  <div>
-                    <p className="text-xs text-apple-gray-600 mb-1">{lang === 'en' ? 'Participation Value' : '参与权价值'}</p>
-                    <p className="font-mono text-sm font-medium text-apple-gray-900">
-                      {formatCurrency(result.participationValue)}
-                    </p>
-                  </div>
-                  
-                  <div>
-                    <p className="text-xs text-apple-gray-600 mb-1">d1</p>
-                    <p className="font-mono text-sm font-medium text-apple-blue-600">
-                      {formatNumber(result.calculations.d1, 6)}
-                    </p>
-                  </div>
-                  
-                  <div>
-                    <p className="text-xs text-apple-gray-600 mb-1">d2</p>
-                    <p className="font-mono text-sm font-medium text-apple-blue-600">
-                      {formatNumber(result.calculations.d2, 6)}
-                    </p>
-                  </div>
-                  
-                  <div>
-                    <p className="text-xs text-apple-gray-600 mb-1">N(d1)</p>
-                    <p className="font-mono text-sm font-medium text-green-600">
-                      {formatNumber(result.calculations.Nd1, 6)}
-                    </p>
-                  </div>
-                  
-                  <div>
-                    <p className="text-xs text-apple-gray-600 mb-1">N(d2)</p>
-                    <p className="font-mono text-sm font-medium text-green-600">
-                      {formatNumber(result.calculations.Nd2, 6)}
-                    </p>
-                  </div>
-                </div>
-                
-                {/* 计算公式说明 */}
-                <div className="mt-4 p-4 bg-white rounded-lg border border-apple-gray-200">
-                  <p className="text-xs font-mono text-apple-gray-700 leading-relaxed">
-                    Call Value = S × N(d1) - K × e^(-rT) × N(d2)<br/>
-                    = {formatCurrency(parameters.totalEquityValue)} × {formatNumber(result.calculations.Nd1, 6)} 
-                    - {formatCurrency(result.strikePrice)} × e^(-{parameters.riskFreeRate}×{parameters.timeToExit}) × {formatNumber(result.calculations.Nd2, 6)}<br/>
-                    = {formatCurrency(result.optionValue)}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* 个别详情弹窗 */}
-        {Object.entries(showDetails).map(([className, isShown]) => {
-          if (!isShown) return null;
-          
-          const result = results.find(r => r.className === className);
-          if (!result) return null;
-          
-          return (
-            <div key={className} className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-              <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-y-auto">
-                <div className="sticky top-0 bg-white border-b border-apple-gray-200 px-6 py-4 flex items-center justify-between rounded-t-2xl">
-                  <h3 className="text-xl font-semibold text-apple-gray-900">
-                    {result.className} - {lang === 'en' ? 'Calculation Details' : '计算详情'}
-                  </h3>
-                  <button
-                    onClick={() => toggleDetails(className)}
-                    className="p-2 hover:bg-apple-gray-100 rounded-lg transition-colors"
-                  >
-                    <span className="text-2xl text-apple-gray-600">×</span>
-                  </button>
-                </div>
-                
-                <div className="p-6 space-y-4">
-                  <div className="bg-apple-gray-50 rounded-xl p-4">
-                    <h4 className="font-semibold text-apple-gray-900 mb-3">
-                      {lang === 'en' ? 'Basic Information' : '基础信息'}
-                    </h4>
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                      <div>
-                        <span className="text-apple-gray-600">{lang === 'en' ? 'Shares:' : '股本数量:'}</span>
-                        <span className="ml-2 font-medium">{formatNumber(result.shares, 0)}</span>
-                      </div>
-                      <div>
-                        <span className="text-apple-gray-600">{lang === 'en' ? 'Conversion Ratio:' : '转股比例:'}</span>
-                        <span className="ml-2 font-medium">{result.conversionRatio}</span>
-                      </div>
-                      <div>
-                        <span className="text-apple-gray-600">{lang === 'en' ? 'Fully Diluted Shares:' : '完全稀释股数:'}</span>
-                        <span className="ml-2 font-medium">{formatNumber(result.fullyDilutedShares, 0)}</span>
-                      </div>
-                      <div>
-                        <span className="text-apple-gray-600">{lang === 'en' ? 'Value per Share:' : '每股价值:'}</span>
-                        <span className="ml-2 font-medium text-green-600">{formatCurrency(result.valuePerShare)}</span>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="bg-apple-gray-50 rounded-xl p-4">
-                    <h4 className="font-semibold text-apple-gray-900 mb-3">
-                      {lang === 'en' ? 'Valuation Calculation' : '估值计算'}
-                    </h4>
-                    <div className="space-y-2 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-apple-gray-600">{lang === 'en' ? 'Strike Price (K):' : '行权价格 (K):'}</span>
-                        <span className="font-medium">{formatCurrency(result.strikePrice)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-apple-gray-600">{lang === 'en' ? 'Option Value:' : '期权价值:'}</span>
-                        <span className="font-medium">{formatCurrency(result.optionValue)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-apple-gray-600">{lang === 'en' ? 'Participation Value:' : '参与权价值:'}</span>
-                        <span className="font-medium">{formatCurrency(result.participationValue)}</span>
-                      </div>
-                      <div className="flex justify-between pt-2 border-t border-apple-gray-300">
-                        <span className="text-apple-gray-900 font-semibold">{lang === 'en' ? 'Total Value:' : '总价值:'}</span>
-                        <span className="font-semibold text-green-600">{formatCurrency(result.totalValue)}</span>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="bg-apple-gray-50 rounded-xl p-4">
-                    <h4 className="font-semibold text-apple-gray-900 mb-3">
-                      {lang === 'en' ? 'Black-Scholes Parameters' : 'Black-Scholes 参数'}
-                    </h4>
-                    <div className="grid grid-cols-2 gap-3 text-sm font-mono">
-                      <div>
-                        <span className="text-apple-gray-600">d1:</span>
-                        <span className="ml-2 font-medium text-apple-blue-600">{formatNumber(result.calculations.d1, 6)}</span>
-                      </div>
-                      <div>
-                        <span className="text-apple-gray-600">d2:</span>
-                        <span className="ml-2 font-medium text-apple-blue-600">{formatNumber(result.calculations.d2, 6)}</span>
-                      </div>
-                      <div>
-                        <span className="text-apple-gray-600">N(d1):</span>
-                        <span className="ml-2 font-medium text-green-600">{formatNumber(result.calculations.Nd1, 6)}</span>
-                      </div>
-                      <div>
-                        <span className="text-apple-gray-600">N(d2):</span>
-                        <span className="ml-2 font-medium text-green-600">{formatNumber(result.calculations.Nd2, 6)}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
       </div>
     </div>
   );
