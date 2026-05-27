@@ -24,14 +24,14 @@ import { getTypeLabel, t } from '../utils/i18n';
  */
 const typeConfig = {
   common: {
-    fields: ['shares', 'pricePerShare'],
+    fields: ['shares'],
     seniority: 0,
-    defaultValues: { shares: 0, pricePerShare: 1.0, liquidationPreference: 0, participation: false, conversionRatio: 1.0 }
+    defaultValues: { shares: 0, pricePerShare: 1.0, participation: false, conversionRatio: 1.0 }
   },
   preferred: {
-    fields: ['shares', 'pricePerShare', 'liquidationPreference', 'conversionRatio', 'participation', 'participationCap'],
+    fields: ['shares', 'pricePerShare', 'seniority', 'conversionRatio', 'participation', 'participationCap'],
     seniority: 3,
-    defaultValues: { shares: 0, pricePerShare: 1.0, liquidationPreference: 1.0, participation: false, conversionRatio: 1.0, participationCap: 1.0 }
+    defaultValues: { shares: 0, pricePerShare: 1.0, seniority: 3, participation: false, conversionRatio: 1.0, participationCap: null }
   },
 
   esop: {
@@ -69,6 +69,13 @@ const fieldConfig = {
     labelKey: 'liqPref',
     type: 'number',
     step: 0.1,
+    min: 0,
+    tipKey: null
+  },
+  seniority: {
+    labelKey: 'seniority',
+    type: 'number',
+    step: 1,
     min: 0,
     tipKey: null
   },

@@ -276,31 +276,36 @@ function App() {
         </div>
       )}
 
+      {/* 参数面板 - 固定浮动覆盖层 */}
+      {showParameters && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-24 bg-black/20 backdrop-blur-sm animate-fade-in" onClick={() => setShowParameters(false)}>
+          <div className="w-full max-w-3xl mx-4" onClick={e => e.stopPropagation()}>
+            <ParametersPanel 
+              parameters={parameters}
+              setParameters={setParameters}
+              onClose={() => setShowParameters(false)}
+              lang={lang}
+            />
+          </div>
+        </div>
+      )}
+
       {/* 主内容区域 */}
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-6">
-        {/* 参数面板 */}
-        {showParameters && (
-          <ParametersPanel 
-            parameters={parameters}
-            setParameters={setParameters}
-            onClose={() => setShowParameters(false)}
-            lang={lang}
-          />
-        )}
 
-        {/* 工具栏 */}
-        <div className="bg-white/80 backdrop-blur-xl rounded-2xl shadow-lg border border-apple-gray-200 p-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
+        {/* 工具栏 - 固定浮动在页面顶部 */}
+        <div className="sticky top-20 z-40 bg-white/80 backdrop-blur-xl rounded-2xl shadow-lg border border-apple-gray-200 p-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center space-x-3">
               <button
                 onClick={addEquityClass}
-                className="px-5 py-2.5 rounded-xl bg-apple-blue-500 hover:bg-apple-blue-600 text-white transition-all duration-200 flex items-center space-x-2 shadow-md"
+                className="px-4 py-2 rounded-xl bg-apple-blue-500 hover:bg-apple-blue-600 text-white transition-all duration-200 flex items-center space-x-2 shadow-md text-sm"
               >
                 <Plus className="w-4 h-4" />
                 <span className="font-medium">{t('addClass', {}, lang)}</span>
               </button>
               
-              <label className="px-5 py-2.5 rounded-xl bg-apple-gray-100 hover:bg-apple-gray-200 text-apple-gray-700 transition-all duration-200 flex items-center space-x-2 cursor-pointer">
+              <label className="px-4 py-2 rounded-xl bg-apple-gray-100 hover:bg-apple-gray-200 text-apple-gray-700 transition-all duration-200 flex items-center space-x-2 cursor-pointer text-sm">
                 <Upload className="w-4 h-4" />
                 <span className="font-medium">{t('importExcel', {}, lang)}</span>
                 <input
@@ -313,7 +318,7 @@ function App() {
               
               <button
                 onClick={handleDownloadTemplate}
-                className="px-5 py-2.5 rounded-xl bg-apple-gray-100 hover:bg-apple-gray-200 text-apple-gray-700 transition-all duration-200 flex items-center space-x-2"
+                className="px-4 py-2 rounded-xl bg-apple-gray-100 hover:bg-apple-gray-200 text-apple-gray-700 transition-all duration-200 flex items-center space-x-2 text-sm"
               >
                 <FileSpreadsheet className="w-4 h-4" />
                 <span className="font-medium">{t('downloadTemplate', {}, lang)}</span>
@@ -324,7 +329,7 @@ function App() {
               {/* DLOM 开关 */}
               <button
                 onClick={() => setIsDLOMEnabled(!isDLOMEnabled)}
-                className={`px-4 py-2.5 rounded-xl transition-all duration-200 flex items-center space-x-2 ${
+                className={`px-3 py-2 rounded-xl transition-all duration-200 flex items-center space-x-2 text-sm ${
                   isDLOMEnabled 
                     ? 'bg-purple-500 hover:bg-purple-600 text-white shadow-md' 
                     : 'bg-apple-gray-100 hover:bg-apple-gray-200 text-apple-gray-700'
@@ -338,7 +343,7 @@ function App() {
               <button
                 onClick={handleExport}
                 disabled={valuationResult.results.length === 0}
-                className="px-5 py-2.5 rounded-xl bg-green-500 hover:bg-green-600 text-white transition-all duration-200 flex items-center space-x-2 shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-4 py-2 rounded-xl bg-green-500 hover:bg-green-600 text-white transition-all duration-200 flex items-center space-x-2 shadow-md disabled:opacity-50 disabled:cursor-not-allowed text-sm"
               >
                 <Download className="w-4 h-4" />
                 <span className="font-medium">{t('exportResult', {}, lang)}</span>

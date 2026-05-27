@@ -165,16 +165,18 @@ export function calculateCallOption(S, K, r, sigma, T, q = 0) {
  * 清算优先权越高，该证券越早获得分配。
  * 
  * 各类型证券的清算优先权计算：
- * - Preferred (seniority=3): 清算优先权倍数 × 股数 × 每股价格
+ * - Preferred: 股数 × 每股价格（即该轮融资总额）
  * - Common/ESOP/Warrant (seniority=0): 0（无清算优先权）
  * 
  * 注意：seniority 字段用于过滤哪些证券的清算优先权计入
  * cumulativeAbsolutePref。只有 seniority > 1 的证券才计入。
+ * 清算优先权金额 = shares × pricePerShare（即该轮融资总额），
+ * 不需要再乘以 liquidationPreference 倍数。
  * ============================================================
  */
 function calculateClassLiquidationPreference(equityClass) {
   switch (equityClass.type) {
-    case 'preferred': return equityClass.liquidationPreference * equityClass.shares * (equityClass.pricePerShare || 1);
+    case 'preferred': return equityClass.shares * (equityClass.pricePerShare || 1);
     default: return 0;
   }
 }
@@ -198,16 +200,11 @@ function calculateClassLiquidationPreference(equityClass) {
 function getEffectiveSharesAtBreakpoint(equityClass, lowerBound, cumulativeAbsolutePref, activeSharesAtBreakpoint) {
   switch (equityClass.type) {
     case 'esop': {
-      // ESOP 动态行权：使用 triggerEV 判断是否已解锁
-      // triggerEV = cumulativeAbsolutePref + (exercisePrice × activeSharesAtThatPoint)
-      // 只有 K_lower ≥ triggerEV 时，ESOP 才被视为"已解锁"
-      const exercisePrice = equityClass.exercisePrice || 0;
-      if (exercisePrice > 0 && cumulativeAbsolutePref !== undefined && activeSharesAtBreakpoint !== undefined) {
-        const triggerEV = cumulativeAbsolutePref + (exercisePrice * activeSharesAtBreakpoint);
-        if (lowerBound < triggerEV) {
-          return 0; // 该 ESOP 在此断点下尚未解锁
-        }
-      }
+      // ESOP 有效股数计算（Treasury Stock Method）
+      // 注意：行权判断（是否已解锁）已在 calculateMarginalAllocationMatrix 中
+      // 通过 esopBreakpointByPrice 统一完成。相同行权价的 ESOP 共享同一个
+      // 断点，同时开始参与分配。因此这里不再重复计算 triggerEV。
+      // 
       // 已解锁的 ESOP：按已行权比例 + 未行权概率折算
       const vestedShares = equityClass.shares * (equityClass.vestedPercentage || 0);
       const unvestedShares = equityClass.shares * (1 - (equityClass.vestedPercentage || 0));
@@ -372,23 +369,39 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
       }
     });
 
+  // ============================================================
   // Participating Preferred participation cap events
+  // 
+  // 只有当 participationCap 被显式设置（不为 null/undefined）时，
+  // 才生成参与上限断点。如果 participationCap 为 null/undefined，
+  // 表示"无上限（No Cap）"，该优先股将永久留在分母中参与分配。
+  // 
+  // 在"无上限"场景下：
+  // - 优先股在 Phase 1 获得清算优先权
+  // - 在 Phase 2 以 as-if-converted 股数永久参与剩余价值分配
+  // - 不需要生成任何转股断点
+  // ============================================================
   equityClasses
     .filter(c => c.type === 'preferred' && c.participation && c.shares > 0)
     .forEach(c => {
-      const capMultiple = c.participationCap !== undefined && c.participationCap !== null ? c.participationCap : 1;
-      const capPerShare = (c.pricePerShare || 0) * capMultiple;
-      if (capPerShare > 0) {
-        perShareEvents.push({
-          id: c.id,
-          className: c.name,
-          type: 'participating_preferred_cap',
-          strike: capPerShare,
-          shares: c.shares * (c.conversionRatio || 1),
-          removesFromActive: true,
-          capPerShare
-        });
+      // 只有当 participationCap 被显式设置时才生成上限断点
+      if (c.participationCap !== undefined && c.participationCap !== null) {
+        const capMultiple = c.participationCap;
+        const capPerShare = (c.pricePerShare || 0) * capMultiple;
+        if (capPerShare > 0) {
+          perShareEvents.push({
+            id: c.id,
+            className: c.name,
+            type: 'participating_preferred_cap',
+            strike: capPerShare,
+            shares: c.shares * (c.conversionRatio || 1),
+            removesFromActive: true,
+            capPerShare
+          });
+        }
       }
+      // 如果 participationCap 为 null/undefined，不生成任何事件
+      // 该优先股将永久留在分母中（No Cap / Double-Dipping）
     });
 
   // Sort events strictly in ascending order by strike price
@@ -504,6 +517,36 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
     }
   });
 
+  // ============================================================
+  // 构建 seniority 分组信息，用于清算优先权区间的逐层分配
+  // 
+  // 在清算优先权区间（K_upper <= cumulativeAbsolutePref），
+  // 分配不是按比例进行的，而是按 seniority 逐层分配：
+  // - 最高 seniority 的优先股先获得其全部清算优先权
+  // - 然后次高 seniority 的优先股获得其全部清算优先权
+  // - 以此类推
+  // 
+  // 为了实现逐层分配，我们需要知道每个 seniority 组的
+  // 累积清算优先权断点，以及每个区间内哪些证券参与分配。
+  // ============================================================
+  const seniorityClasses = equityClasses.filter(c => (c.seniority || 0) > 1);
+  const seniorityGroups = {};
+  seniorityClasses.forEach(c => {
+    const s = c.seniority || 0;
+    if (!seniorityGroups[s]) seniorityGroups[s] = [];
+    seniorityGroups[s].push(c);
+  });
+  const sortedSeniorities = Object.keys(seniorityGroups).map(Number).sort((a, b) => b - a);
+  
+  // 构建 seniority 断点映射：每个 seniority 级别的累积清算优先权
+  let cumPref = 0;
+  const seniorityBreakpoints = {};
+  sortedSeniorities.forEach(seniority => {
+    const groupPref = seniorityGroups[seniority].reduce((sum, c) => sum + calculateClassLiquidationPreference(c), 0);
+    cumPref += groupPref;
+    seniorityBreakpoints[seniority] = cumPref;
+  });
+
   for (let i = 1; i < breakpoints.length; i++) {
     const K_lower = breakpoints[i - 1];
     const K_upper = breakpoints[i];
@@ -512,8 +555,34 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
     let totalActiveSharesInTranche = 0;
 
     if (K_upper <= cumulativeAbsolutePref) {
-      equityClasses.forEach(c => {
-        if ((c.seniority || 0) > 1) {
+      // ============================================================
+      // 清算优先权区间：按 seniority 逐层分配
+      // 
+      // 对于每个 seniority 级别，检查当前区间是否落在该级别的
+      // 清算优先权范围内。如果是，只有该 seniority 级别的证券
+      // 参与分配（按清算优先权金额比例）。
+      // 
+      // 例如：
+      //   Seniority 3: $5M (Series A)
+      //   Seniority 2: $3M (Series B)
+      //   cumulativeAbsolutePref = $8M
+      //   
+      //   区间 [0, $5M]: 只有 Seniority 3 参与分配
+      //   区间 [$5M, $8M]: 只有 Seniority 2 参与分配
+      // ============================================================
+      let activeSeniority = null;
+      for (const s of sortedSeniorities) {
+        const bp = seniorityBreakpoints[s];
+        if (K_upper <= bp) {
+          activeSeniority = s;
+          break;
+        }
+      }
+      
+      if (activeSeniority !== null) {
+        // 只有当前 activeSeniority 级别的证券参与分配
+        const activeClasses = seniorityGroups[activeSeniority];
+        activeClasses.forEach(c => {
           const pref = calculateClassLiquidationPreference(c);
           if (pref > 0) {
             activeSharesMap[c.name] = pref;
@@ -521,10 +590,19 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
           } else {
             activeSharesMap[c.name] = 0;
           }
-        } else {
+        });
+        // 其他所有证券（包括其他 seniority 级别和 common）分配为 0
+        equityClasses.forEach(c => {
+          if (!activeSharesMap.hasOwnProperty(c.name)) {
+            activeSharesMap[c.name] = 0;
+          }
+        });
+      } else {
+        // 如果不在任何 seniority 区间内（理论上不会发生），所有证券分配为 0
+        equityClasses.forEach(c => {
           activeSharesMap[c.name] = 0;
-        }
-      });
+        });
+      }
     } else {
       equityClasses.forEach(c => {
         if (c.type === 'common') {

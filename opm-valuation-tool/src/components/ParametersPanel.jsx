@@ -5,15 +5,54 @@
  * 支持多语言
  */
 
+import { useState } from 'react';
 import { X, Sliders } from 'lucide-react';
 import { t } from '../utils/i18n';
 
 function ParametersPanel({ parameters, setParameters, onClose, lang }) {
+  // 本地输入值缓存：用于在用户输入过程中保持原始字符串，
+  // 避免 parseFloat 将 "0." 或 "" 错误转换为 0
+  const [inputCache, setInputCache] = useState({});
+
   const handleChange = (field, value) => {
     setParameters(prev => ({
       ...prev,
       [field]: value
     }));
+  };
+
+  // 数字输入框的 onChange 处理
+  // 解决删除后显示 0 的问题
+  const handleNumberChange = (field, rawValue) => {
+    setInputCache(prev => ({ ...prev, [field]: rawValue }));
+    if (rawValue === '') return;
+    const num = parseFloat(rawValue);
+    if (!isNaN(num)) {
+      handleChange(field, num);
+    }
+  };
+
+  // 当用户聚焦输入框时，如果当前值为 0 则清空输入缓存
+  const handleFocus = (field) => {
+    if (!inputCache[field] && (parameters[field] === 0 || parameters[field] === '0')) {
+      setInputCache(prev => ({ ...prev, [field]: '' }));
+    }
+  };
+
+  // 当用户离开输入框时，如果缓存为空则恢复为 0
+  const handleBlur = (field) => {
+    const cached = inputCache[field];
+    if (cached === '' || cached === undefined || cached === null) {
+      handleChange(field, 0);
+      setInputCache(prev => ({ ...prev, [field]: undefined }));
+    }
+  };
+
+  // 获取输入框的显示值
+  const getInputValue = (field) => {
+    if (inputCache[field] !== undefined) return inputCache[field];
+    const val = parameters[field];
+    return val === 0 || val === '0' ? '' : (val ?? '');
   };
 
   return (
@@ -41,8 +80,10 @@ function ParametersPanel({ parameters, setParameters, onClose, lang }) {
             <span className="absolute left-4 top-1/2 -translate-y-1/2 text-apple-gray-500">$</span>
             <input
               type="number"
-              value={parameters.totalEquityValue}
-              onChange={(e) => handleChange('totalEquityValue', parseFloat(e.target.value) || 0)}
+              value={getInputValue('totalEquityValue')}
+              onChange={(e) => handleNumberChange('totalEquityValue', e.target.value)}
+              onFocus={() => handleFocus('totalEquityValue')}
+              onBlur={() => handleBlur('totalEquityValue')}
               className="w-full pl-8 pr-4 py-3 bg-white rounded-xl border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
               placeholder="10000000"
             />
@@ -64,8 +105,10 @@ function ParametersPanel({ parameters, setParameters, onClose, lang }) {
                 step="0.01"
                 min="0"
                 max="2"
-                value={parameters.volatility}
-                onChange={(e) => handleChange('volatility', parseFloat(e.target.value) || 0)}
+                value={getInputValue('volatility')}
+                onChange={(e) => handleNumberChange('volatility', e.target.value)}
+                onFocus={() => handleFocus('volatility')}
+                onBlur={() => handleBlur('volatility')}
                 className="w-full px-4 py-3 bg-white rounded-xl border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
                 placeholder="0.50"
               />
@@ -100,8 +143,10 @@ function ParametersPanel({ parameters, setParameters, onClose, lang }) {
                 step="0.001"
                 min="0"
                 max="0.2"
-                value={parameters.riskFreeRate}
-                onChange={(e) => handleChange('riskFreeRate', parseFloat(e.target.value) || 0)}
+                value={getInputValue('riskFreeRate')}
+                onChange={(e) => handleNumberChange('riskFreeRate', e.target.value)}
+                onFocus={() => handleFocus('riskFreeRate')}
+                onBlur={() => handleBlur('riskFreeRate')}
                 className="w-full px-4 py-3 bg-white rounded-xl border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
                 placeholder="0.04"
               />
@@ -136,8 +181,10 @@ function ParametersPanel({ parameters, setParameters, onClose, lang }) {
                 step="0.001"
                 min="0"
                 max="0.2"
-                value={parameters.dividendYield || 0}
-                onChange={(e) => handleChange('dividendYield', parseFloat(e.target.value) || 0)}
+                value={getInputValue('dividendYield')}
+                onChange={(e) => handleNumberChange('dividendYield', e.target.value)}
+                onFocus={() => handleFocus('dividendYield')}
+                onBlur={() => handleBlur('dividendYield')}
                 className="w-full px-4 py-3 bg-white rounded-xl border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
                 placeholder="0.00"
               />
@@ -172,8 +219,10 @@ function ParametersPanel({ parameters, setParameters, onClose, lang }) {
                 step="0.5"
                 min="0.5"
                 max="10"
-                value={parameters.timeToExit}
-                onChange={(e) => handleChange('timeToExit', parseFloat(e.target.value) || 0)}
+                value={getInputValue('timeToExit')}
+                onChange={(e) => handleNumberChange('timeToExit', e.target.value)}
+                onFocus={() => handleFocus('timeToExit')}
+                onBlur={() => handleBlur('timeToExit')}
                 className="w-full px-4 py-3 bg-white rounded-xl border border-apple-gray-300 focus:border-apple-blue-500 focus:ring-2 focus:ring-apple-blue-500/20 focus:outline-none transition-all"
                 placeholder="3.0"
               />

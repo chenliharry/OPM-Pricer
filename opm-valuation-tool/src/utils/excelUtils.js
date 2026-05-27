@@ -40,43 +40,64 @@ export function exportToExcel(results, parameters, equityClasses, breakpointTabl
   // Sheet 1: 资本结构 (Capital Structure) - 与模板格式一致
   // 使用与 downloadTemplate 相同的表头结构，确保导出的文件
   // 可以直接被 importFromExcel 重新导入
+  // 
+  // 每种类型只导出其相关字段：
+  // - Common: 层级名称, 类型, 股本数量, 优先级
+  // - Preferred: 层级名称, 类型, 股本数量, 每股价格, 参与权, 转股比例, 优先级, 参与上限
+  // - ESOP: 层级名称, 类型, 股本数量, 行权价格, 已行权比例, 行权概率, 优先级
+  // - Warrant: 层级名称, 类型, 股本数量, 行权价格, 优先级
+  // 
+  // 注意：清算优先权金额 = shares × pricePerShare（即该轮融资总额），
+  // 不再需要单独的"清算优先权倍数"字段。
   // ============================================================
   const header = [
     lang === 'en' ? 'Class Name' : '层级名称',
     lang === 'en' ? 'Type' : '类型 (Type)',
     lang === 'en' ? 'Shares' : '股本数量 (Shares)',
     lang === 'en' ? 'Price/Share' : '每股价格 (Price/Share)',
-    lang === 'en' ? 'Liq. Preference' : '清算优先权 (Liquidation Preference)',
     lang === 'en' ? 'Participation' : '参与权 (Participation)',
     lang === 'en' ? 'Conversion Ratio' : '转股比例 (Conversion Ratio)',
     lang === 'en' ? 'Seniority' : '优先级 (Seniority)',
     lang === 'en' ? 'Exercise Price' : '行权价格 (Exercise Price)',
     lang === 'en' ? 'Vested %' : '已行权比例 (Vested %)',
     lang === 'en' ? 'Vesting Prob.' : '行权概率 (Vesting Probability)',
-    lang === 'en' ? 'Investment Amt' : '投资金额 (Investment Amount)',
-    lang === 'en' ? 'Valuation Cap' : '估值上限 (Valuation Cap)',
-    lang === 'en' ? 'Discount Rate' : '折扣率 (Discount Rate)'
-
+    lang === 'en' ? 'Participation Cap' : '参与上限 (Participation Cap)'
   ];
 
   // 将 equityClasses 转换为模板格式的行数据
-  const classRows = equityClasses.map(ec => [
-    ec.name,
-    ec.type,
-    ec.shares || 0,
-    ec.pricePerShare || '',
-    ec.liquidationPreference || '',
-    ec.participation ? (lang === 'en' ? 'Yes' : '是') : (lang === 'en' ? 'No' : '否'),
-    ec.conversionRatio || '',
-    ec.seniority || 0,
-    ec.exercisePrice || '',
-    ec.vestedPercentage || '',
-    ec.probabilityOfVesting || '',
-    ec.investmentAmount || '',
-    ec.valuationCap || '',
-    ec.discountRate || ''
-  ]);
-
+  // 每种类型只填充其相关字段，无关字段留空
+  const classRows = equityClasses.map(ec => {
+    const row = [
+      ec.name,
+      ec.type,
+      ec.shares || 0,
+      '',  // Price/Share - 仅 Preferred
+      '',  // Participation - 仅 Preferred
+      '',  // Conversion Ratio - 仅 Preferred
+      ec.seniority || 0,
+      '',  // Exercise Price - 仅 ESOP/Warrant
+      '',  // Vested % - 仅 ESOP
+      '',  // Vesting Prob. - 仅 ESOP
+      ''   // Participation Cap - 仅 Preferred
+    ];
+    
+    // 根据类型填充相关字段
+    if (ec.type === 'preferred') {
+      row[3] = ec.pricePerShare || '';
+      row[4] = ec.participation ? (lang === 'en' ? 'Yes' : '是') : (lang === 'en' ? 'No' : '否');
+      row[5] = ec.conversionRatio || '';
+      row[10] = ec.participationCap !== undefined && ec.participationCap !== null ? ec.participationCap : '';
+    } else if (ec.type === 'esop') {
+      row[7] = ec.exercisePrice || '';
+      row[8] = ec.vestedPercentage || '';
+      row[9] = ec.probabilityOfVesting || '';
+    } else if (ec.type === 'warrant') {
+      row[7] = ec.exercisePrice || '';
+    }
+    // Common: 所有额外字段留空
+    
+    return row;
+  });
 
   const capStructureData = [header, ...classRows];
   const capStructureSheet = XLSX.utils.aoa_to_sheet(capStructureData);
@@ -107,33 +128,28 @@ export function exportToExcel(results, parameters, equityClasses, breakpointTabl
   XLSX.utils.book_append_sheet(wb, paramSheet, lang === 'en' ? 'Parameters' : '估值参数 (Parameters)');
 
   // ============================================================
-  // Sheet 2: 断点分配详情表 (Breakpoint Allocation Table)
-  // 关键特性：分配金额列使用公式，支持审计追溯
+  // Sheet 2: 断点分配表 - 分配比例 (Allocation %)
+  // 单独展示各层级在各断点区间的分配比例，方便用 Excel 公式验证
   // ============================================================
-  const bpHeader = [
+  const bpPctHeader = [
     lang === 'en' ? 'Lower Bound' : '下限 (Lower)',
     lang === 'en' ? 'Upper Bound' : '上限 (Upper)',
-    lang === 'en' ? 'Strike (K)' : '行权价 (K)',
-    lang === 'en' ? 'Call Value C(K)' : '期权价值 C(K)',
     lang === 'en' ? 'Tranche Value' : '该层分配额 (Tranche Value)',
     'd₁', 'd₂', 'N(d₁)', 'N(d₂)',
     lang === 'en' ? 'Formula' : '计算公式 (Formula)'
   ];
 
-  // 为每个结果类添加分配列
+  // 为每个结果类添加分配比例列
   results.forEach(r => {
-    bpHeader.push(`${r.className} ${lang === 'en' ? 'Alloc %' : '分配比例'}`);
-    bpHeader.push(`${r.className} ${lang === 'en' ? 'Alloc $' : '分配金额'}`);
+    bpPctHeader.push(`${r.className} ${lang === 'en' ? 'Alloc %' : '分配比例'}`);
   });
 
-  const bpData = [bpHeader];
+  const bpPctData = [bpPctHeader];
   
   breakpointTable.forEach((tranche, idx) => {
     const row = [
       tranche.lower,
       tranche.upper,
-      tranche.lowerOption.strikePrice,
-      tranche.lowerOption.value,
       tranche.trancheValue,
       tranche.lowerOption.d1,
       tranche.lowerOption.d2,
@@ -142,84 +158,72 @@ export function exportToExcel(results, parameters, equityClasses, breakpointTabl
       tranche.formula
     ];
 
-    // 为每个结果类添加分配比例和金额
+    // 为每个结果类添加分配比例
     results.forEach(r => {
       const allocation = tranche.allocations.find(a => a.className === r.className);
-      if (allocation) {
-        row.push(allocation.proportion);
-        row.push(allocation.amount);
-      } else {
-        row.push(0);
-        row.push(0);
-      }
+      row.push(allocation ? allocation.proportion : 0);
     });
 
-    bpData.push(row);
+    bpPctData.push(row);
+  });
+
+  const bpPctSheet = XLSX.utils.aoa_to_sheet(bpPctData);
+  XLSX.utils.book_append_sheet(wb, bpPctSheet, lang === 'en' ? 'Allocation %' : '分配比例');
+
+  // ============================================================
+  // Sheet 3: 断点分配表 - 分配金额 (Allocation $)
+  // 单独展示各层级在各断点区间分配到的金额，方便用 Excel 公式验证
+  // 分配金额 = Tranche Value × 分配比例
+  // ============================================================
+  const bpAmtHeader = [
+    lang === 'en' ? 'Lower Bound' : '下限 (Lower)',
+    lang === 'en' ? 'Upper Bound' : '上限 (Upper)',
+    lang === 'en' ? 'Tranche Value' : '该层分配额 (Tranche Value)',
+    'd₁', 'd₂', 'N(d₁)', 'N(d₂)',
+    lang === 'en' ? 'Formula' : '计算公式 (Formula)'
+  ];
+
+  // 为每个结果类添加分配金额列
+  results.forEach(r => {
+    bpAmtHeader.push(`${r.className} ${lang === 'en' ? 'Alloc $' : '分配金额'}`);
+  });
+
+  const bpAmtData = [bpAmtHeader];
+  
+  breakpointTable.forEach((tranche, idx) => {
+    const row = [
+      tranche.lower,
+      tranche.upper,
+      tranche.trancheValue,
+      tranche.lowerOption.d1,
+      tranche.lowerOption.d2,
+      tranche.lowerOption.Nd1,
+      tranche.lowerOption.Nd2,
+      tranche.formula
+    ];
+
+    // 为每个结果类添加分配金额
+    results.forEach(r => {
+      const allocation = tranche.allocations.find(a => a.className === r.className);
+      row.push(allocation ? allocation.amount : 0);
+    });
+
+    bpAmtData.push(row);
   });
 
   // 添加汇总行
   const totalAllocated = results.reduce((sum, r) => sum + r.totalValue, 0);
   const summaryRow = [
-    '', '', '', '',
+    '', '',
     lang === 'en' ? 'Total Allocated' : '分配总额 (Total Allocated)',
     totalAllocated,
     '', '', '', ''
   ];
-  // 填充汇总行的分配列
-  results.forEach(() => { summaryRow.push(''); summaryRow.push(''); });
-  bpData.push(summaryRow);
+  results.forEach(() => { summaryRow.push(''); });
+  bpAmtData.push(summaryRow);
 
-  const bpSheet = XLSX.utils.aoa_to_sheet(bpData);
-  XLSX.utils.book_append_sheet(wb, bpSheet, lang === 'en' ? 'Breakpoint Table' : '断点分配表');
-
-  // ============================================================
-  // Sheet 3: 各层级估值结果（含计算逻辑说明）
-  // ============================================================
-  const resultHeader = [
-    lang === 'en' ? 'Class Name' : '层级名称',
-    lang === 'en' ? 'Type' : '类型',
-    lang === 'en' ? 'Shares' : '股本数量 (Shares)',
-    lang === 'en' ? 'Fully Diluted' : '完全稀释股数 (Fully Diluted)',
-    lang === 'en' ? 'Strike Price' : '行权价格 (Strike Price)',
-    lang === 'en' ? 'Option Value' : '期权价值 (Option Value)',
-    lang === 'en' ? 'Participation Value' : '参与权价值 (Participation Value)',
-    lang === 'en' ? 'Total Value' : '总价值 (Total Value)',
-    lang === 'en' ? 'Value/Share' : '每股价值 (Value/Share)',
-    'd₁', 'd₂', 'N(d₁)', 'N(d₂)',
-    lang === 'en' ? 'Calculation Logic' : '计算逻辑说明 (Calculation Logic)'
-  ];
-
-  const resultData = [resultHeader];
-  
-  results.forEach(result => {
-    resultData.push([
-      result.className,
-      getTypeLabel(result.type, lang),
-      result.shares,
-      result.fullyDilutedShares,
-      result.strikePrice,
-      result.optionValue,
-      result.participationValue,
-      result.totalValue,
-      result.valuePerShare,
-      result.calculations.d1,
-      result.calculations.d2,
-      result.calculations.Nd1,
-      result.calculations.Nd2,
-      generateCalculationExplanation(result, lang)
-    ]);
-  });
-
-  // 添加汇总行
-  resultData.push([
-    lang === 'en' ? 'Total' : '合计 (Total)',
-    '', '', '', '', '', '',
-    totalAllocated,
-    '', '', '', '', '', ''
-  ]);
-
-  const resultSheet = XLSX.utils.aoa_to_sheet(resultData);
-  XLSX.utils.book_append_sheet(wb, resultSheet, lang === 'en' ? 'Results' : '估值结果');
+  const bpAmtSheet = XLSX.utils.aoa_to_sheet(bpAmtData);
+  XLSX.utils.book_append_sheet(wb, bpAmtSheet, lang === 'en' ? 'Allocation $' : '分配金额');
 
   // 生成并下载 Excel 文件
   const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
@@ -279,14 +283,14 @@ export async function importFromExcel(file) {
               type: String(type).toLowerCase(),
               shares,
               pricePerShare: parseFloat(row[3]) || 1.0,
-              liquidationPreference: parseFloat(row[4]) || 0,
-              participation: row[5] === 'Yes' || row[5] === '是' || row[5] === true,
-              conversionRatio: parseFloat(row[6]) || 1.0,
-              seniority: parseInt(row[7]) || 0,
+              participation: row[4] === 'Yes' || row[4] === '是' || row[4] === true,
+              conversionRatio: parseFloat(row[5]) || 1.0,
+              seniority: parseInt(row[6]) || 0,
               // ESOP 参数
-              exercisePrice: parseFloat(row[8]) || 0,
-              vestedPercentage: parseFloat(row[9]) || 0,
-              probabilityOfVesting: parseFloat(row[10]) || 0.5,
+              exercisePrice: parseFloat(row[7]) || 0,
+              vestedPercentage: parseFloat(row[8]) || 0,
+              probabilityOfVesting: parseFloat(row[9]) || 0.5,
+              participationCap: row[10] !== undefined && row[10] !== '' ? parseFloat(row[10]) : null,
               principal: parseFloat(row[14]) || 0,
               interestRate: parseFloat(row[15]) || 0,
               conversionPrice: parseFloat(row[16]) || 0
@@ -348,45 +352,49 @@ export function downloadTemplate(lang = 'zh') {
   // Sheet 1: 资本结构输入模板
   // 关键金融术语保留英文括号对照，防止翻译歧义
   // 表头下方添加字段说明行（灰色注释行）
+  // 
+  // 每种类型只显示其相关字段：
+  // - Common: 层级名称, 类型, 股本数量, 优先级
+  // - Preferred: 层级名称, 类型, 股本数量, 每股价格, 参与权, 转股比例, 优先级, 参与上限
+  // - ESOP: 层级名称, 类型, 股本数量, 行权价格, 已行权比例, 行权概率, 优先级
+  // - Warrant: 层级名称, 类型, 股本数量, 行权价格, 优先级
+  // 
+  // 注意：清算优先权金额 = shares × pricePerShare（即该轮融资总额），
+  // 不再需要单独的"清算优先权倍数"字段。
   // ============================================================
   const header = [
     lang === 'en' ? 'Class Name' : '层级名称',
     lang === 'en' ? 'Type' : '类型 (Type)',
     lang === 'en' ? 'Shares' : '股本数量 (Shares)',
     lang === 'en' ? 'Price/Share' : '每股价格 (Price/Share)',
-    lang === 'en' ? 'Liq. Preference' : '清算优先权 (Liquidation Preference)',
     lang === 'en' ? 'Participation' : '参与权 (Participation)',
     lang === 'en' ? 'Conversion Ratio' : '转股比例 (Conversion Ratio)',
     lang === 'en' ? 'Seniority' : '优先级 (Seniority)',
     lang === 'en' ? 'Exercise Price' : '行权价格 (Exercise Price)',
     lang === 'en' ? 'Vested %' : '已行权比例 (Vested %)',
     lang === 'en' ? 'Vesting Prob.' : '行权概率 (Vesting Probability)',
-    lang === 'en' ? 'Investment Amt' : '投资金额 (Investment Amount)',
-    lang === 'en' ? 'Valuation Cap' : '估值上限 (Valuation Cap)',
-    lang === 'en' ? 'Discount Rate' : '折扣率 (Discount Rate)'
-
+    lang === 'en' ? 'Participation Cap' : '参与上限 (Participation Cap)'
   ];
 
   // 字段说明行（在表头下方显示为注释）
   const fieldDescriptions = [
     lang === 'en' ? 'Security name (e.g., Series A)' : '证券名称（如 Series A）',
     lang === 'en' ? 'Type: common/preferred/esop/warrant' : '类型: common/preferred/esop/warrant',
-
     lang === 'en' ? 'Number of shares (integer)' : '持股数量（整数）',
-    lang === 'en' ? 'Price per share (for preferred)' : '每股价格（优先股使用）',
-    lang === 'en' ? 'Liquidation preference multiple (e.g., 1 = 1x). Common: fill 0' : '清算优先权倍数（如 1 代表 1x）。普通股填 0',
-    lang === 'en' ? 'TRUE/FALSE. Whether to participate in residual distribution' : '是否参与剩余分配（TRUE/FALSE）',
-    lang === 'en' ? 'Conversion ratio (e.g., 1.0)' : '转股比例（如 1.0）',
+    lang === 'en' ? 'Price per share. Preferred only. Liq. Preference = shares × pricePerShare' : '每股价格。仅优先股使用。清算优先权 = 股数 × 每股价格',
+    lang === 'en' ? 'TRUE/FALSE. Whether to participate. Preferred only.' : '是否参与剩余分配（TRUE/FALSE）。仅优先股使用。',
+    lang === 'en' ? 'Conversion ratio. Preferred only.' : '转股比例。仅优先股使用。',
     lang === 'en' ? 'Priority: higher = earlier distribution (3 > 2 > 1 > 0)' : '优先级: 数值越大越优先（3 > 2 > 1 > 0）',
-    lang === 'en' ? 'Strike price. Common: fill 0. ESOP: must fill actual strike price' : '行权价。普通股填 0；ESOP 必须填写实际行权价',
-    lang === 'en' ? 'Vested percentage (0-1). ESOP only' : '已行权比例（0-1）。仅 ESOP 使用',
-    lang === 'en' ? 'Vesting probability (0-1). ESOP only' : '行权概率（0-1）。仅 ESOP 使用',
+    lang === 'en' ? 'Strike price. ESOP/Warrant only.' : '行权价。仅 ESOP/Warrant 使用。',
+    lang === 'en' ? 'Vested percentage (0-1). ESOP only.' : '已行权比例（0-1）。仅 ESOP 使用。',
+    lang === 'en' ? 'Vesting probability (0-1). ESOP only.' : '行权概率（0-1）。仅 ESOP 使用。',
+    lang === 'en' ? 'Participation cap multiple. Preferred only. Leave blank = No Cap.' : '参与上限倍数。仅优先股使用。留空 = 无上限。'
   ];
 
   const exampleData = [
-    ['Series A Preferred', 'preferred', 1000000, 1.00, 1.0, 'No', 1.0, 3, '', '', '', '', '', ''],
-    ['ESOP Pool', 'esop', 500000, '', '', '', '', 2, 0.50, 0.40, 0.60, '', '', ''],
-    ['Common Stock', 'common', 5000000, 0.10, 0, 'No', 1.0, 0, '', '', '', '', '', '']
+    ['Series A Preferred', 'preferred', 1000000, 1.00, 'No', 1.0, 3, '', '', '', ''],
+    ['ESOP Pool', 'esop', 500000, '', '', '', 2, 0.50, 0.40, 0.60, ''],
+    ['Common Stock', 'common', 5000000, '', '', '', 0, '', '', '', '']
   ];
 
 
