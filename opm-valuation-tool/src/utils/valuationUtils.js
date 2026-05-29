@@ -452,16 +452,42 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
 
   // ============================================================
   // Step 5: Iteratively push breakpoints and expand/contract the denominator
+  // 
+  // 修正后的断点计算公式（符合 AICPA 估值指南）：
+  //   Breakpoint_i = Breakpoint_{i-1} + ActiveShares × (ExercisePrice_i - ExercisePrice_{i-1})
+  // 
+  // 其中：
+  //   - Breakpoint_0 = cumulativeAbsolutePref（清算优先权总额）
+  //   - ExercisePrice_0 = 0（第一个事件之前的"隐含行权价"）
+  //   - ActiveShares 是当前事件触发前的有效股数
+  // 
+  // 这个公式的直观含义：
+  // 每个断点代表"从上一个断点开始，所有 activeShares 需要再增值多少，
+  // 才能让每股价值达到当前事件的 exercisePrice"。
+  // 
+  // 例如：
+  //   cumulativeAbsolutePref = $10M, activeShares = 5M
+  //   Event 1: exercisePrice = $0.50
+  //     BP_1 = $10M + 5M × ($0.50 - $0) = $10M + $2.5M = $12.5M
+  //   Event 2: exercisePrice = $1.00, activeShares = 6M (after ESOP unlock)
+  //     BP_2 = $12.5M + 6M × ($1.00 - $0.50) = $12.5M + $3M = $15.5M
   // ============================================================
   const processedEvents = [];
+  let previousBP = cumulativeAbsolutePref;
+  let previousStrike = 0;
   
   mergedEvents.forEach(event => {
-    const triggerEV = cumulativeAbsolutePref + (event.strike * activeShares);
+    // 修正公式：BP_i = BP_{i-1} + activeShares × (strike_i - strike_{i-1})
+    const triggerEV = previousBP + (activeShares * (event.strike - previousStrike));
     
     if (triggerEV > 0) {
       K.push(triggerEV);
     }
     
+    // 记录断点前的 activeShares（用于公式说明）
+    const activeSharesBeforeEvent = activeShares;
+    
+    // 更新 activeShares（事件触发后，新证券加入分母）
     activeShares += event.netSharesChange;
     
     event.classNames.forEach((className, idx) => {
@@ -473,19 +499,30 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
         triggerPrice: event.strike,
         sharesAdded: event.netSharesChange,
         activeSharesAfter: activeShares,
-        cumulativeAbsolutePrefAfter: cumulativeAbsolutePref
+        cumulativeAbsolutePrefAfter: cumulativeAbsolutePref,
+        // 新增：用于公式说明的字段
+        previousBP: previousBP,
+        previousStrike: previousStrike,
+        activeSharesBeforeEvent: activeSharesBeforeEvent
       });
     });
+    
+    // 更新前一个断点和行权价
+    previousBP = triggerEV;
+    previousStrike = event.strike;
   });
 
   // ============================================================
   // Step 6: Calculate the "Fully Diluted" breakpoint
+  // 
+  // 完全稀释断点 = 最后一个事件断点 + 最终 activeShares × (lastStrike - 0)
+  // 但实际上，最后一个事件之后已经没有更多行权价了，
+  // 所以完全稀释断点就是最后一个事件断点本身。
+  // 如果最后一个事件之后还有 activeShares 变化，则：
+  //   fullyDilutedBP = lastBP + finalActiveShares × (∞ - lastStrike)
+  // 但 ∞ 无法计算，所以用最后一个事件断点作为最终断点。
   // ============================================================
-  let fullyDilutedBP = cumulativeAbsolutePref;
-  if (mergedEvents.length > 0) {
-    const lastEvent = mergedEvents[mergedEvents.length - 1];
-    fullyDilutedBP = cumulativeAbsolutePref + (lastEvent.strike * activeShares);
-  }
+  let fullyDilutedBP = previousBP;
   
   if (fullyDilutedBP > 0 && !K.includes(fullyDilutedBP)) {
     K.push(fullyDilutedBP);
@@ -493,7 +530,11 @@ export function buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue) {
 
   const uniqueK = [...new Set(K)].sort((a, b) => a - b);
   
-  return { breakpoints: uniqueK, cumulativeAbsolutePref, processedEvents, fullyDilutedBP };
+  // 记录完全稀释时的最终 activeShares 和最后一个事件的 strike
+  const finalActiveShares = activeShares;
+  const lastStrike = mergedEvents.length > 0 ? mergedEvents[mergedEvents.length - 1].strike : 0;
+  
+  return { breakpoints: uniqueK, cumulativeAbsolutePref, processedEvents, fullyDilutedBP, finalActiveShares, lastStrike };
 }
 
 /**
@@ -826,7 +867,7 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
   // ============================================================
   // 第一步：构建高级断点矩阵
   // ============================================================
-  const { breakpoints: uniqueBreakpoints, cumulativeAbsolutePref, processedEvents } = 
+  const { breakpoints: uniqueBreakpoints, cumulativeAbsolutePref, processedEvents, finalActiveShares, lastStrike } = 
     buildAdvancedBreakpointMatrix(equityClasses, totalEquityValue);
   
   // ============================================================
@@ -848,6 +889,193 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
   // 第四步：构建断点分配表
   // ============================================================
   const breakpointTable = [];
+  
+  // ============================================================
+  // 构建断点计算说明（用于 UI 悬停提示）
+  // 
+  // 每个断点（Upper）的计算方式：
+  // 1. Seniority 清算断点: BP = sum(shares × pricePerShare) for each seniority group
+  // 2. ESOP 行权断点: BP = cumulativeAbsolutePref + (exercisePrice × activeShares)
+  // 3. Non-participating Preferred 转股断点: BP = cumulativeAbsolutePref + (conversionPrice × activeShares)
+  // 4. Participating Preferred 参与上限断点: BP = cumulativeAbsolutePref + (capPerShare × activeShares)
+  // 5. 完全稀释断点: BP = cumulativeAbsolutePref + (lastEvent.strike × activeShares)
+  // 
+  // 实现策略：
+  // 先构建一个 bp → explanation 的映射表，然后为每个断点查找对应的说明。
+  // 这样可以避免索引错位问题，确保每个断点都匹配到正确的逻辑。
+  // ============================================================
+  
+  // 构建 seniority 分组信息
+  const seniorityClasses = equityClasses.filter(c => (c.seniority || 0) > 1);
+  const seniorityGroups = {};
+  seniorityClasses.forEach(c => {
+    const s = c.seniority || 0;
+    if (!seniorityGroups[s]) seniorityGroups[s] = [];
+    seniorityGroups[s].push(c);
+  });
+  const sortedSeniorities = Object.keys(seniorityGroups).map(Number).sort((a, b) => b - a);
+  
+  // 第一步：构建 bp → explanation 映射表
+  const bpExplanationMap = {};
+  
+  // 1a. Seniority 清算断点
+  let cumPref = 0;
+  sortedSeniorities.forEach(seniority => {
+    const groupPref = seniorityGroups[seniority].reduce((sum, c) => sum + calculateClassLiquidationPreference(c), 0);
+    cumPref += groupPref;
+    const details = seniorityGroups[seniority].map(c => ({
+      name: c.name,
+      shares: c.shares,
+      pricePerShare: c.pricePerShare || 1,
+      amount: calculateClassLiquidationPreference(c)
+    }));
+    bpExplanationMap[cumPref] = {
+      type: 'seniority',
+      seniority,
+      details,
+      formula: details.map(d => `${d.name}: ${d.shares.toLocaleString()} shares × $${d.pricePerShare} = $${d.amount.toLocaleString()}`).join('\n'),
+      total: cumPref
+    };
+  });
+  
+  // 1b. 事件断点（ESOP、Preferred 转股、参与上限、Warrant）
+  // 
+  // 修正后的公式（符合 AICPA 估值指南）：
+  //   BP_i = BP_{i-1} + activeShares × (strike_i - strike_{i-1})
+  // 
+  // 其中：
+  //   - BP_{i-1} = 上一个断点（previousBP）
+  //   - strike_{i-1} = 上一个事件的行权价（previousStrike）
+  //   - activeShares = 当前事件触发前的有效股数（activeSharesBeforeEvent）
+  //   - strike_i = 当前事件的行权价（triggerPrice）
+  // 
+  // 这个公式的直观含义：
+  // 每个断点代表"从上一个断点开始，所有 activeShares 需要再增值多少，
+  // 才能让每股价值达到当前事件的 exercisePrice"。
+  // ============================================================
+  processedEvents.forEach(event => {
+    const bp = event.triggerEV;
+    if (bp <= 0) return;
+    
+    const eventType = event.type;
+    let eventLabel = '';
+    let formulaParts = [];
+    
+    // 使用增量公式：BP_i = BP_{i-1} + activeShares × (strike_i - strike_{i-1})
+    const prevBP = event.previousBP || cumulativeAbsolutePref;
+    const prevStrike = event.previousStrike || 0;
+    const activeSharesBefore = event.activeSharesBeforeEvent || 0;
+    const strikeDiff = event.triggerPrice - prevStrike;
+    
+    if (eventType === 'esop') {
+      eventLabel = `ESOP @ $${event.triggerPrice}`;
+      formulaParts = [
+        `previousBP (BP_{i-1}) = $${prevBP.toLocaleString()}`,
+        `activeShares = ${activeSharesBefore.toLocaleString()} shares`,
+        `strike_i = $${event.triggerPrice}`,
+        `strike_{i-1} = $${prevStrike}`,
+        `strikeDiff = $${event.triggerPrice} - $${prevStrike} = $${strikeDiff}`,
+        `BP_i = BP_{i-1} + activeShares × (strike_i - strike_{i-1})`,
+        `     = $${prevBP.toLocaleString()} + ${activeSharesBefore.toLocaleString()} × $${strikeDiff}`,
+        `     = $${bp.toLocaleString()}`
+      ];
+    } else if (eventType === 'non_participating_preferred') {
+      eventLabel = event.className;
+      formulaParts = [
+        `previousBP (BP_{i-1}) = $${prevBP.toLocaleString()}`,
+        `activeShares = ${activeSharesBefore.toLocaleString()} shares`,
+        `conversionPrice (strike_i) = $${event.triggerPrice}`,
+        `strike_{i-1} = $${prevStrike}`,
+        `strikeDiff = $${event.triggerPrice} - $${prevStrike} = $${strikeDiff}`,
+        `BP_i = BP_{i-1} + activeShares × (strike_i - strike_{i-1})`,
+        `     = $${prevBP.toLocaleString()} + ${activeSharesBefore.toLocaleString()} × $${strikeDiff}`,
+        `     = $${bp.toLocaleString()}`
+      ];
+    } else if (eventType === 'participating_preferred_cap') {
+      eventLabel = `${event.className} (Cap)`;
+      formulaParts = [
+        `previousBP (BP_{i-1}) = $${prevBP.toLocaleString()}`,
+        `activeShares = ${activeSharesBefore.toLocaleString()} shares`,
+        `capPerShare (strike_i) = $${event.triggerPrice}`,
+        `strike_{i-1} = $${prevStrike}`,
+        `strikeDiff = $${event.triggerPrice} - $${prevStrike} = $${strikeDiff}`,
+        `BP_i = BP_{i-1} + activeShares × (strike_i - strike_{i-1})`,
+        `     = $${prevBP.toLocaleString()} + ${activeSharesBefore.toLocaleString()} × $${strikeDiff}`,
+        `     = $${bp.toLocaleString()}`
+      ];
+    } else if (eventType === 'warrant') {
+      eventLabel = `${event.className} (Warrant)`;
+      formulaParts = [
+        `previousBP (BP_{i-1}) = $${prevBP.toLocaleString()}`,
+        `activeShares = ${activeSharesBefore.toLocaleString()} shares`,
+        `exercisePrice (strike_i) = $${event.triggerPrice}`,
+        `strike_{i-1} = $${prevStrike}`,
+        `strikeDiff = $${event.triggerPrice} - $${prevStrike} = $${strikeDiff}`,
+        `BP_i = BP_{i-1} + activeShares × (strike_i - strike_{i-1})`,
+        `     = $${prevBP.toLocaleString()} + ${activeSharesBefore.toLocaleString()} × $${strikeDiff}`,
+        `     = $${bp.toLocaleString()}`
+      ];
+    }
+    
+    // 如果该 bp 已有 seniority 说明，追加事件信息
+    // 否则直接设置事件说明
+    if (bpExplanationMap[bp]) {
+      // 已有 seniority 说明，追加事件标签
+      bpExplanationMap[bp].eventLabel = eventLabel;
+      bpExplanationMap[bp].eventFormula = formulaParts.join('\n');
+    } else {
+      bpExplanationMap[bp] = {
+        type: eventType,
+        label: eventLabel,
+        formula: formulaParts.join('\n'),
+        total: bp
+      };
+    }
+  });
+  
+  // 1c. 完全稀释断点（最后一个断点）
+  const lastBP = uniqueBreakpoints[uniqueBreakpoints.length - 1];
+  if (lastBP > 0 && !bpExplanationMap[lastBP]) {
+    const formulaParts = [
+      `cumulativeAbsolutePref = $${cumulativeAbsolutePref.toLocaleString()}`,
+      `lastEvent.strike = $${lastStrike}`,
+      `finalActiveShares = ${finalActiveShares.toLocaleString()} shares`,
+      `BP = $${cumulativeAbsolutePref.toLocaleString()} + ($${lastStrike} × ${finalActiveShares.toLocaleString()})`
+    ];
+    bpExplanationMap[lastBP] = {
+      type: 'fully_diluted',
+      label: 'Fully Diluted',
+      formula: formulaParts.join('\n'),
+      total: lastBP
+    };
+  }
+  
+  // 第二步：为每个断点查找对应的说明
+  const breakpointExplanations = [];
+  for (let i = 1; i < uniqueBreakpoints.length; i++) {
+    const bp = uniqueBreakpoints[i];
+    // 在映射表中查找最接近的 bp（允许微小误差）
+    const keys = Object.keys(bpExplanationMap).map(Number);
+    let matchedKey = null;
+    for (const key of keys) {
+      if (Math.abs(bp - key) < 0.01) {
+        matchedKey = key;
+        break;
+      }
+    }
+    
+    if (matchedKey !== null) {
+      breakpointExplanations.push(bpExplanationMap[matchedKey]);
+    } else {
+      // 如果没有匹配到任何说明，生成一个通用说明
+      breakpointExplanations.push({
+        type: 'unknown',
+        label: 'Breakpoint',
+        formula: `BP = $${bp.toLocaleString()}`,
+        total: bp
+      });
+    }
+  }
   
   for (let i = 0; i < uniqueBreakpoints.length - 1; i++) {
     const lower = uniqueBreakpoints[i];
@@ -882,7 +1110,63 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
       upperOption,
       trancheValue,
       allocations,
-      formula: `C($${lower.toLocaleString()}) - C($${upper.toLocaleString()})`
+      formula: `C($${lower.toLocaleString()}) - C($${upper.toLocaleString()})`,
+      // 该断点的计算说明（用于 UI 悬停提示）
+      // 注意：breakpointExplanations[i] 对应的是 lower 断点的说明
+      // 因为 breakpointExplanations 的索引与 uniqueBreakpoints[1..n] 对齐
+      // 而当前 tranche 的 lower = uniqueBreakpoints[i], upper = uniqueBreakpoints[i+1]
+      // 所以 lower 断点的说明 = breakpointExplanations[i]
+      lowerExplanation: breakpointExplanations[i] || null
+    });
+  }
+  
+  // ============================================================
+  // 添加最终层（Tail Tranche）：最后一个断点之后的剩余价值
+  // 
+  // 在 OPM 框架中，最后一个断点（fully diluted breakpoint）之后，
+  // 所有已解锁的证券继续按比例参与剩余价值分配。
+  // 该层的价值 = C(lastBP)，即最后一个断点的看涨期权价值。
+  // 
+  // 这代表了"企业价值超过最后一个断点"的部分，
+  // 所有已解锁的证券（Common、已转股的 Preferred、已解锁的 ESOP 等）
+  // 按其在最后一个区间中的有效股数比例分配这部分价值。
+  // ============================================================
+  const tailLastIdx = uniqueBreakpoints.length - 1;
+  const tailLastBP = uniqueBreakpoints[tailLastIdx];
+  const tailLastOption = breakpointOptions[tailLastIdx];
+  const tailTrancheValue = Math.max(0, tailLastOption.value);
+  
+  if (tailTrancheValue > 0) {
+    // 使用最后一个区间的分配比例（所有已解锁证券继续参与）
+    const lastMatrixEntry = allocationMatrix[allocationMatrix.length - 1];
+    
+    const tailAllocations = equityClasses.map(ec => {
+      const proportion = lastMatrixEntry ? (lastMatrixEntry.proportions[ec.name] || 0) : 0;
+      const amount = tailTrancheValue * proportion;
+      
+      return {
+        className: ec.name,
+        type: ec.type,
+        shares: ec.shares,
+        effectiveShares: lastMatrixEntry ? (lastMatrixEntry.totalActiveShares * proportion) : 0,
+        exercisePrice: ec.exercisePrice || 0,
+        conversionRatio: ec.conversionRatio || 1,
+        proportion,
+        amount
+      };
+    });
+    
+    breakpointTable.push({
+      lower: tailLastBP,
+      upper: Infinity,
+      lowerOption: tailLastOption,
+      upperOption: { value: 0, strikePrice: Infinity, d1: Infinity, d2: Infinity, Nd1: 1, Nd2: 1 },
+      trancheValue: tailTrancheValue,
+      allocations: tailAllocations,
+      formula: `C($${tailLastBP.toLocaleString()}) - C(∞) = C($${tailLastBP.toLocaleString()})`,
+      // 最终层的 lower 断点说明 = 最后一个断点的说明
+      lowerExplanation: breakpointExplanations[breakpointExplanations.length - 1] || null,
+      isTailTranche: true
     });
   }
   

@@ -159,8 +159,87 @@ function ResultsDisplay({ results, parameters, breakpointTable, totalAllocated, 
                   <td className="py-3 px-3 font-mono text-xs text-apple-gray-700">
                     {formatCurrency(tranche.lower)}
                   </td>
-                  <td className="py-3 px-3 font-mono text-xs text-apple-gray-700">
-                    {formatCurrency(tranche.upper)}
+                  <td className="py-3 px-3 font-mono text-xs text-apple-gray-700 relative group">
+                    <span className={`cursor-help border-b border-dotted ${tranche.isTailTranche ? 'border-purple-400 text-purple-600' : 'border-apple-gray-400'}`}>
+                      {tranche.upper === Infinity ? '∞' : formatCurrency(tranche.upper)}
+                    </span>
+                    {/* 悬停显示断点计算说明 */}
+                    {/* 注意：lowerExplanation 对应的是当前 tranche 的 lower 断点 */}
+                    {/* 即该 tranche 的"入口"断点，定义了该区间从何处开始 */}
+                    {tranche.lowerExplanation && (
+                      <div className="absolute z-20 hidden group-hover:block left-0 top-full mt-1 bg-white rounded-xl shadow-2xl border border-apple-gray-200 p-4 w-96 text-left animate-fade-in">
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold text-apple-gray-900 mb-2">
+                            {lang === 'en' ? 'Breakpoint Calculation' : '断点计算说明'}
+                          </p>
+                          {tranche.lowerExplanation.type === 'seniority' ? (
+                            <>
+                              <p className="text-xs font-medium text-apple-blue-600">
+                                {lang === 'en' ? `Seniority ${tranche.lowerExplanation.seniority} Liquidation Preference` : `优先级 ${tranche.lowerExplanation.seniority} 清算优先权`}
+                              </p>
+                              <div className="bg-apple-gray-50 rounded-lg p-2 space-y-1">
+                                {tranche.lowerExplanation.details.map((d, idx) => (
+                                  <p key={idx} className="text-xs font-mono text-apple-gray-700">
+                                    {d.name}: {d.shares.toLocaleString()} shares × ${d.pricePerShare} = <span className="font-semibold text-green-600">${d.amount.toLocaleString()}</span>
+                                  </p>
+                                ))}
+                              </div>
+                              <p className="text-xs font-mono text-apple-gray-700 pt-1">
+                                {lang === 'en' ? 'Total:' : '合计:'} <span className="font-semibold text-apple-gray-900">${tranche.lowerExplanation.total.toLocaleString()}</span>
+                              </p>
+                              {/* 如果该断点同时也是事件断点，追加事件信息 */}
+                              {tranche.lowerExplanation.eventLabel && (
+                                <>
+                                  <div className="border-t border-apple-gray-200 my-2"></div>
+                                  <p className="text-xs font-medium text-apple-blue-600">
+                                    {tranche.lowerExplanation.eventLabel}
+                                  </p>
+                                  <div className="bg-apple-gray-50 rounded-lg p-2 space-y-0.5">
+                                    {tranche.lowerExplanation.eventFormula.split('\n').map((line, idx) => (
+                                      <p key={idx} className="text-xs font-mono text-apple-gray-700">
+                                        {line}
+                                      </p>
+                                    ))}
+                                  </div>
+                                </>
+                              )}
+                            </>
+                          ) : tranche.lowerExplanation.type === 'fully_diluted' ? (
+                            <>
+                              <p className="text-xs font-medium text-apple-blue-600">
+                                {lang === 'en' ? 'Fully Diluted Breakpoint' : '完全稀释断点'}
+                              </p>
+                              <div className="bg-apple-gray-50 rounded-lg p-2 space-y-0.5">
+                                {tranche.lowerExplanation.formula.split('\n').map((line, idx) => (
+                                  <p key={idx} className="text-xs font-mono text-apple-gray-700">
+                                    {line}
+                                  </p>
+                                ))}
+                              </div>
+                              <p className="text-xs font-mono text-apple-gray-700 pt-1">
+                                BP = <span className="font-semibold text-green-600">${tranche.lowerExplanation.total.toLocaleString()}</span>
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <p className="text-xs font-medium text-apple-blue-600">
+                                {tranche.lowerExplanation.label}
+                              </p>
+                              <div className="bg-apple-gray-50 rounded-lg p-2 space-y-0.5">
+                                {tranche.lowerExplanation.formula.split('\n').map((line, idx) => (
+                                  <p key={idx} className="text-xs font-mono text-apple-gray-700">
+                                    {line}
+                                  </p>
+                                ))}
+                              </div>
+                              <p className="text-xs font-mono text-apple-gray-700 pt-1">
+                                BP = <span className="font-semibold text-green-600">${tranche.lowerExplanation.total.toLocaleString()}</span>
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </td>
                   <td className="py-3 px-3 text-right font-mono text-xs text-apple-gray-700">
                     {formatCurrency(tranche.lowerOption.strikePrice)}
@@ -175,9 +254,19 @@ function ResultsDisplay({ results, parameters, breakpointTable, totalAllocated, 
                       <div className="absolute z-10 left-0 top-full mt-1 bg-white rounded-xl shadow-2xl border border-apple-gray-200 p-3 w-80 text-left animate-fade-in">
                         <p className="text-xs font-mono text-apple-gray-700 leading-relaxed">
                           <span className="font-semibold text-apple-gray-900">{t('bpFormula', {}, lang)}</span><br/>
-                          C({formatCurrency(tranche.upper)}) - C({formatCurrency(tranche.lower)})<br/>
-                          = {formatCurrency(tranche.upperOption.value)} - {formatCurrency(tranche.lowerOption.value)}<br/>
-                          = <span className="text-green-600 font-bold">{formatCurrency(tranche.trancheValue)}</span>
+                          {tranche.isTailTranche ? (
+                            <>
+                              C({formatCurrency(tranche.lower)}) - C(∞)<br/>
+                              = {formatCurrency(tranche.lowerOption.value)} - 0<br/>
+                              = <span className="text-green-600 font-bold">{formatCurrency(tranche.trancheValue)}</span>
+                            </>
+                          ) : (
+                            <>
+                              C({formatCurrency(tranche.upper)}) - C({formatCurrency(tranche.lower)})<br/>
+                              = {formatCurrency(tranche.upperOption.value)} - {formatCurrency(tranche.lowerOption.value)}<br/>
+                              = <span className="text-green-600 font-bold">{formatCurrency(tranche.trancheValue)}</span>
+                            </>
+                          )}
                         </p>
                       </div>
                     )}
@@ -406,50 +495,50 @@ function ResultsDisplay({ results, parameters, breakpointTable, totalAllocated, 
               {/* DLOM 扩展行（仅当 isDLOMEnabled 时显示） */}
               {isDLOMEnabled && (
                 <>
-              {/* Row 4: Class 波动率 (Vol) */}
-              <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors">
-                <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
-                  {lang === 'en' ? '4. Class Volatility' : '4. Class 波动率 (Vol)'}
-                </td>
-                {results.map((result, rIdx) => (
-                  <td key={rIdx} className="py-4 px-4 text-center font-mono text-purple-700">
-                    {result.dlom && result.dlom.classVolatility > 0
-                      ? formatPercent(result.dlom.classVolatility)
-                      : '-'}
-                  </td>
-                ))}
-              </tr>
-
-              {/* Row 5: DLOM 比例 (%) */}
-              <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors">
-                <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
-                  {lang === 'en' ? '5. DLOM Rate' : '5. DLOM 比例 (%)'}
-                </td>
-                {results.map((result, rIdx) => (
-                  <td key={rIdx} className="py-4 px-4 text-center font-mono text-red-600">
-                    {result.dlom && result.dlom.dlom > 0
-                      ? formatPercent(result.dlom.dlom)
-                      : '0.00%'}
-                  </td>
-                ))}
-              </tr>
-
-              {/* Row 6: 折价后每股参考价 (After DLOM) */}
-              <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors bg-purple-50/50">
-                <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
-                  {lang === 'en' ? '6. Per-Share After DLOM' : '6. 折价后每股参考价 (After DLOM)'}
-                </td>
-                {results.map((result, rIdx) => {
-                  const afterDLOM = result.dlom && result.dlom.dlom > 0
-                    ? result.valuePerShare * (1 - result.dlom.dlom)
-                    : result.valuePerShare;
-                  return (
-                    <td key={rIdx} className="py-4 px-4 text-center font-mono font-bold text-purple-700">
-                      {formatCurrency(afterDLOM)}
+                  {/* Row 4: Class 波动率 (Vol) */}
+                  <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors">
+                    <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
+                      {lang === 'en' ? '4. Class Volatility' : '4. Class 波动率 (Vol)'}
                     </td>
-                  );
-                })}
-              </tr>
+                    {results.map((result, rIdx) => (
+                      <td key={rIdx} className="py-4 px-4 text-center font-mono text-purple-700">
+                        {result.dlom && result.dlom.classVolatility > 0
+                          ? formatPercent(result.dlom.classVolatility)
+                          : '-'}
+                      </td>
+                    ))}
+                  </tr>
+
+                  {/* Row 5: DLOM 比例 (%) */}
+                  <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors">
+                    <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
+                      {lang === 'en' ? '5. DLOM Rate' : '5. DLOM 比例 (%)'}
+                    </td>
+                    {results.map((result, rIdx) => (
+                      <td key={rIdx} className="py-4 px-4 text-center font-mono text-red-600">
+                        {result.dlom && result.dlom.dlom > 0
+                          ? formatPercent(result.dlom.dlom)
+                          : '0.00%'}
+                      </td>
+                    ))}
+                  </tr>
+
+                  {/* Row 6: 折价后每股参考价 (After DLOM) */}
+                  <tr className="border-b border-apple-gray-100 hover:bg-apple-gray-50 transition-colors bg-purple-50/50">
+                    <td className="py-4 px-4 font-semibold text-apple-gray-900 whitespace-nowrap">
+                      {lang === 'en' ? '6. Per-Share After DLOM' : '6. 折价后每股参考价 (After DLOM)'}
+                    </td>
+                    {results.map((result, rIdx) => {
+                      const afterDLOM = result.dlom && result.dlom.dlom > 0
+                        ? result.valuePerShare * (1 - result.dlom.dlom)
+                        : result.valuePerShare;
+                      return (
+                        <td key={rIdx} className="py-4 px-4 text-center font-mono font-bold text-purple-700">
+                          {formatCurrency(afterDLOM)}
+                        </td>
+                      );
+                    })}
+                  </tr>
                 </>
               )}
             </tbody>

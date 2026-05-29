@@ -149,7 +149,7 @@ export function exportToExcel(results, parameters, equityClasses, breakpointTabl
   breakpointTable.forEach((tranche, idx) => {
     const row = [
       tranche.lower,
-      tranche.upper,
+      tranche.isTailTranche ? '∞' : tranche.upper,
       tranche.trancheValue,
       tranche.lowerOption.d1,
       tranche.lowerOption.d2,
@@ -193,7 +193,7 @@ export function exportToExcel(results, parameters, equityClasses, breakpointTabl
   breakpointTable.forEach((tranche, idx) => {
     const row = [
       tranche.lower,
-      tranche.upper,
+      tranche.isTailTranche ? '∞' : tranche.upper,
       tranche.trancheValue,
       tranche.lowerOption.d1,
       tranche.lowerOption.d2,
