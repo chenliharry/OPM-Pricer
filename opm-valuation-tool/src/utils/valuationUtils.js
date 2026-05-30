@@ -659,7 +659,9 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
           }
         } else if (c.type === 'preferred' && !c.participation) {
           const triggerEV = classBreakpointMap[c.name];
-          if (triggerEV !== undefined && K_lower >= triggerEV) {
+          // 修正：使用 K_upper >= triggerEV 替代 K_lower >= triggerEV
+          // 这样最后一个断点（最高行权价）的 class 也能在最后一个区间参与分配
+          if (triggerEV !== undefined && K_upper >= triggerEV) {
             activeSharesMap[c.name] = getEffectiveSharesAtBreakpoint(c, K_lower, cumulativeAbsolutePref, totalActiveSharesInTranche);
             totalActiveSharesInTranche += activeSharesMap[c.name];
           } else {
@@ -667,7 +669,8 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
           }
         } else if (c.type === 'esop') {
           const triggerEV = esopBreakpointByPrice[c.exercisePrice];
-          if (triggerEV !== undefined && K_lower >= triggerEV) {
+          // 修正：使用 K_upper >= triggerEV 替代 K_lower >= triggerEV
+          if (triggerEV !== undefined && K_upper >= triggerEV) {
             const effectiveShares = getEffectiveSharesAtBreakpoint(c, K_lower, cumulativeAbsolutePref, totalActiveSharesInTranche);
             activeSharesMap[c.name] = effectiveShares;
             totalActiveSharesInTranche += effectiveShares;
@@ -676,7 +679,8 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
           }
         } else if (c.type === 'warrant') {
           const triggerEV = classBreakpointMap[c.name];
-          if (triggerEV !== undefined && K_lower >= triggerEV) {
+          // 修正：使用 K_upper >= triggerEV 替代 K_lower >= triggerEV
+          if (triggerEV !== undefined && K_upper >= triggerEV) {
             const effectiveShares = getEffectiveSharesAtBreakpoint(c, K_lower, cumulativeAbsolutePref, totalActiveSharesInTranche);
             activeSharesMap[c.name] = effectiveShares;
             totalActiveSharesInTranche += effectiveShares;
@@ -712,97 +716,118 @@ export function calculateMarginalAllocationMatrix(breakpoints, equityClasses, cu
 /**
  * ============================================================
  * 计算各层级证券的 Delta（对标的资产价值的敏感度）
- * 
+ *
  * 在 OPM 框架中，每个层级证券的价值 V_class 可以表示为
  * 一系列看涨期权价差的加权和：
  *   V_class = Σ_i w_i × [C(K_{i-1}) - C(K_i)]
- * 
+ *
  * 其中 w_i 是第 i 个 Tranche 中该层级的分配比例。
- * 
- * 该层级的 Delta 为：
- *   delta_class = ∂V_class / ∂S
- *               = Σ_i w_i × [N(d1_{i-1}) - N(d1_i)]
- * 
+ *
+ * 该层级的 Delta 为（含股息调整）：
+ *   delta_class = e^(-qT) × Σ_i w_i × [N(d1_{i-1}) - N(d1_i)]
+ *
  * 其中 N(d1) 是看涨期权对标的资产的一阶偏导（Delta）。
+ * e^(-qT) 是股息率调整因子：标的资产支付股息降低了
+ * 期权价值对标的资产变动的敏感度。
+ *
  * 注意：这里使用的是 Tranche 上下限 N(d1) 的差值，
  * 而不是 N(d1) 的绝对值。这是因为每个 Tranche 的价值
  * 是 C(Lower) - C(Upper)，其 Delta 是 N(d1_lower) - N(d1_upper)。
- * 
+ *
+ * 对于 Tail Tranche（upper = ∞），C(∞) 的 Delta = 0，
+ * 因此 Tail Tranche 的 Delta = N(d1_lastBP)（不含股息调整的话）。
+ *
  * 这个 Delta 用于计算层级特有波动率（Finnerty 模型）：
  *   σ_Class_j = σ_Asset × (S / V_Class_j) × delta_class
- * 
+ *
  * @param {Array} breakpointTable - 断点分配表
  * @param {string} className - 层级名称
  * @param {number} totalEquityValue - 企业总价值 S
  * @param {number} classValue - 该层级的总价值 V_class
+ * @param {number} timeToExit - 预期退出期限 T（用于股息调整）
+ * @param {number} dividendYield - 连续股息率 q（用于股息调整）
  * @returns {number} classDelta - 该层级的 Delta（范围 0~1）
  * ============================================================
  */
-export function calculateClassDelta(breakpointTable, className, totalEquityValue, classValue) {
+export function calculateClassDelta(breakpointTable, className, totalEquityValue, classValue, timeToExit = 0, dividendYield = 0) {
   if (totalEquityValue <= 0 || classValue <= 0) return 0;
-  
+
   let classDelta = 0;
-  
+
   breakpointTable.forEach(tranche => {
     const allocation = tranche.allocations.find(a => a.className === className);
     if (allocation && allocation.proportion > 0) {
-      // 该 Tranche 的 Delta = N(d1_lower) - N(d1_upper)
+      // 该 Tranche 的 Delta = e^(-qT) × [N(d1_lower) - N(d1_upper)]
       const deltaLower = tranche.lowerOption.Nd1;
       const deltaUpper = tranche.upperOption.Nd1;
       const trancheDelta = deltaLower - deltaUpper;
-      
+
       // 该层级在该 Tranche 中的贡献 = 分配比例 × Tranche Delta
       classDelta += allocation.proportion * trancheDelta;
     }
   });
-  
-  return classDelta;
+
+  // 股息率调整：Black-Scholes Delta = e^(-qT) × N(d1)
+  // 当 q=0 时，e^(-0) = 1，无调整
+  if (dividendYield > 0 && timeToExit > 0) {
+    classDelta *= Math.exp(-dividendYield * timeToExit);
+  }
+
+  return Math.max(0, Math.min(1, classDelta));
 }
 
 /**
  * ============================================================
  * 计算层级特有波动率 σ_Class_j 和 Finnerty DLOM
- * 
+ *
  * 本实现基于 Finnerty (2012) 模型，使用期权弹性（Omega）方法：
- * 
+ *
  * 公式 1：层级特有波动率（Class Volatility via Omega）
  *   Omega = (S / V_Class_j) × delta_class
  *   σ_Class_j = Omega × σ_Asset
- * 
+ *
  *   其中：
  *   - S: 企业总权益价值
  *   - V_Class_j: 该层级的总价值
  *   - delta_class: 该层级的 Delta（对标的资产价值的敏感度）
  *   - σ_Asset: 企业整体波动率
- * 
+ *
  *   推导逻辑：
  *   期权弹性（Omega）衡量标的资产价格变动 1% 时，
  *   期权价值变动的百分比。对于由多个期权价差组成的层级证券，
  *   其整体弹性为 (S/V) × delta，乘以 σ_Asset 得到层级特有波动率。
- * 
+ *
  *   注意：delta_class 的范围是 [0, 1]，因此 Omega 的范围是 [0, S/V]。
  *   当 V_Class 较小时（如 Common Stock），Omega 可能较大，
  *   导致 σ_Class 高于 σ_Asset，这反映了低层级证券的杠杆效应。
- * 
+ *
+ *   稳定性约束（Stability Bounds）：
+ *   - σ_Class 上限为 5 × σ_Asset。此上限源于 AICPA valuation guide
+ *     中关于 OPM 模型在极端杠杆下产生不合理结果的实务共识。
+ *   - DLOM 自然界限为 [0, 1)，但实务中对于典型的私募企业，
+ *     DLOM 通常不会超过 80%。超过 5 × σ_Asset 的类波动率在
+ *     Finnerty 框架中会收敛到近 100% 的 DLOM，失去了经济意义。
+ *     实务替代方案包括：Asian put option model, Stout 实证研究等。
+ *
  * 公式 2：DLOM（Finnerty 指数衰减模型）
  *   DLOM = 1 - e^(-σ_Class × √T)
- * 
+ *
  *   其中：
  *   - σ_Class: 层级特有波动率
  *   - T: 预期持有期
  *   - e: 自然常数
- * 
+ *
  *   这个公式基于 Finnerty (2012) 的经典模型，
  *   将缺乏市场流通性视为一种持有期风险。
  *   持有期越长、波动率越高，DLOM 越大。
  *   该模型被 IRS 和法院广泛认可。
- * 
+ *
  * @param {number} totalEquityValue - 企业总价值 S
  * @param {number} classValue - 该层级的总价值 V_class
  * @param {number} classDelta - 该层级的 Delta（范围 0~1）
  * @param {number} firmVolatility - 企业整体波动率 σ_firm
  * @param {number} holdingPeriod - 预期持有期（年）
- * @returns {object} { omega, classVolatility, dlom, discountedValue }
+ * @returns {object} { omega, classVolatility, classVolatilityCapped, dlom, discountedValue }
  * ============================================================
  */
 export function calculateFinnertyDLOM(totalEquityValue, classValue, classDelta, firmVolatility, holdingPeriod) {
@@ -811,37 +836,46 @@ export function calculateFinnertyDLOM(totalEquityValue, classValue, classDelta, 
     return {
       omega: 0,
       classVolatility: 0,
+      classVolatilityCapped: false,
       dlom: 0,
       discountedValue: classValue
     };
   }
-  
+
   // ============================================================
   // 公式 1：计算期权弹性 Omega 和层级特有波动率
   // Omega = (S / V_Class_j) × delta_class
   // σ_Class_j = Omega × σ_Asset
+  //
+  // 稳定性约束：σ_Class_j 上限为 5 × σ_Asset
+  // 超过此上限时，Finnerty 模型会收敛到接近 100% 的 DLOM，
+  // 此时模型的区分度显著降低。
   // ============================================================
   const omega = (totalEquityValue / classValue) * classDelta;
-  const classVolatility = omega * firmVolatility;
-  
+  const rawClassVolatility = omega * firmVolatility;
+  const maxVolatility = 5 * firmVolatility;
+  const classVolatility = Math.min(rawClassVolatility, maxVolatility);
+  const classVolatilityCapped = rawClassVolatility > maxVolatility;
+
   // ============================================================
   // 公式 2：计算 Finnerty DLOM
   // DLOM = 1 - e^(-σ_Class × √T)
-  // 
+  //
   // 这是 Finnerty (2012) 的标准指数衰减模型。
   // 当 σ_Class × √T 较大时，DLOM 趋近于 100%。
   // 当 σ_Class × √T 较小时，DLOM ≈ σ_Class × √T（一阶泰勒展开）。
   // ============================================================
   const sqrtT = Math.sqrt(holdingPeriod);
   const dlom = 1 - Math.exp(-classVolatility * sqrtT);
-  
+
   // 计算折扣后价值
   const discountedValue = classValue * (1 - dlom);
-  
+
   return {
     omega,
     classVolatility,
-    dlom: Math.max(0, Math.min(1, dlom)), // 限制在 [0, 1] 范围内
+    classVolatilityCapped,
+    dlom: Math.max(0, Math.min(1, dlom)),
     discountedValue
   };
 }
@@ -1160,7 +1194,7 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
       lower: tailLastBP,
       upper: Infinity,
       lowerOption: tailLastOption,
-      upperOption: { value: 0, strikePrice: Infinity, d1: Infinity, d2: Infinity, Nd1: 1, Nd2: 1 },
+      upperOption: { value: 0, strikePrice: Infinity, d1: -Infinity, d2: -Infinity, Nd1: 0, Nd2: 0 },
       trancheValue: tailTrancheValue,
       allocations: tailAllocations,
       formula: `C($${tailLastBP.toLocaleString()}) - C(∞) = C($${tailLastBP.toLocaleString()})`,
@@ -1221,8 +1255,8 @@ export function performOPMValuation(totalEquityValue, equityClasses, volatility,
     // 公式 3：DLOM（Finnerty 指数衰减模型）
     //   DLOM = 1 - e^(-σ_Class × √T)
     // ============================================================
-    const classDelta = calculateClassDelta(breakpointTable, ec.name, totalEquityValue, totalValue);
-    
+    const classDelta = calculateClassDelta(breakpointTable, ec.name, totalEquityValue, totalValue, timeToExit, dividendYield);
+
     // 计算 Finnerty DLOM
     const dlomResult = calculateFinnertyDLOM(
       totalEquityValue,

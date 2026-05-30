@@ -503,7 +503,14 @@ function ResultsDisplay({ results, parameters, breakpointTable, totalAllocated, 
                     {results.map((result, rIdx) => (
                       <td key={rIdx} className="py-4 px-4 text-center font-mono text-purple-700">
                         {result.dlom && result.dlom.classVolatility > 0
-                          ? formatPercent(result.dlom.classVolatility)
+                          ? (<span>
+                              {formatPercent(result.dlom.classVolatility)}
+                              {result.dlom.classVolatilityCapped && (
+                                <span className="ml-1 text-orange-500 cursor-help" title={lang === 'en' ? 'Capped at 5× firm volatility for numerical stability' : '已达上限 (5× 企业波动率)，Finnerty 模型在此范围区分度降低'}>
+                                  *
+                                </span>
+                              )}
+                            </span>)
                           : '-'}
                       </td>
                     ))}
